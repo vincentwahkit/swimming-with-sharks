@@ -181,6 +181,47 @@ function computePar3(nett, banker, mults) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+function makeFilename(courseName) {
+  const now = new Date();
+  const date = now.toISOString().slice(0,10).replace(/-/g,"");
+  const time = String(now.getHours()).padStart(2,"0") + String(now.getMinutes()).padStart(2,"0");
+  const course = (courseName||"Custom")
+    .split(/[\s\-_\/]+/)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join("")
+    .replace(/[^a-zA-Z0-9]/g,"")
+    .slice(0,10);
+  return `sws.${date}.${course}.${time}.json`;
+}
+
+async function exportRound(roundData) {
+  const json = JSON.stringify(roundData, null, 2);
+  const filename = makeFilename(roundData.courseName);
+  const blob = new Blob([json], { type: "application/json" });
+  const file = new File([blob], filename, { type: "application/json" });
+  // Try Web Share API with files (iOS 15+, Android Chrome)
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: filename });
+      return;
+    } catch (e) {
+      if (e.name === "AbortError") return;
+    }
+  }
+  // Fallback: direct download
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SETUP
 // ─────────────────────────────────────────────────────────────────────────────
 function Setup({ onStart, savedRounds = [], onLoadRound }) {
@@ -199,6 +240,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
   const [storageMsg, setStorageMsg] = useState("");
   const [loadedCourse, setLoadedCourse] = useState(PRESET_COURSES[0]);
   const [games, setGames] = useState({ vegas: true, ct: true, p3: true });
+  const [importPreview, setImportPreview] = useState(null);
+  const [activeSection, setActiveSection] = useState(null); // "course" | "games" | "history"
+  const importRef = React.useRef();
 
   React.useEffect(() => {
     try {
@@ -230,11 +274,29 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
     setTimeout(() => setStorageMsg(""), 2500);
   }
 
+  function handleImport(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (!data.config || !data.config.names) { alert("Invalid round file."); return; }
+        setImportPreview(data);
+      } catch { alert("Could not read file."); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
   return (
     <div style={S.page}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap');
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        html { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; }
+        body { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; margin: 0; }
+        #root { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: none; }
         input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
         input[type=number] { -moz-appearance: textfield; }
         .pm-btn:active { transform: scale(0.92); background: #2a5a2a !important; }
@@ -242,101 +304,121 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
         .start-btn:active { transform: scale(0.97); }
         .hole-nav:active { transform: scale(0.95); background: #1e3a1e !important; }
         .inplay-toggle:active { opacity: 0.8; }
+        .setup-row:active { opacity: 0.7; }
         select { appearance: none; -webkit-appearance: none; }
       `}</style>
+
+      {/* Import preview modal */}
+      {importPreview && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#0d2210", border: "1px solid #2a5a2a", borderRadius: 14, padding: 20, width: "100%", maxWidth: 420 }}>
+            <div style={{ fontSize: 11, color: COLORS[0], letterSpacing: 2, marginBottom: 12, fontFamily: "'DM Sans', sans-serif" }}>IMPORT ROUND</div>
+            <div style={{ fontSize: 16, fontWeight: "600", color: "#e8f5e8", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>{importPreview.courseName || "Round"}</div>
+            <div style={{ fontSize: 12, color: "#4a7a4a", marginBottom: 14, fontFamily: "'DM Sans', sans-serif" }}>{importPreview.date}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 16 }}>
+              {importPreview.config.names.map((name, pi) => {
+                const cfg = importPreview.config;
+                const ss = cfg._savedState;
+                if (!ss) return <div key={pi} />;
+                const vCum=[0,0,0,0],cCum=[0,0,0,0],pCum=[0,0,0,0];
+                cfg.holes.forEach((h,hi) => {
+                  if (!ss.inPlay[hi]) return;
+                  const g=ss.gross[hi];
+                  const n=[0,1,2,3].map(p=>nettScore(g[p],ss.liveHcps[p],h.si,h.par));
+                  if (cfg.games.vegas){const vr=computeVegas(ss.vTeams[hi],g,n,h.par);if(vr){ss.vTeams[hi][0].forEach(p=>{vCum[p]+=vr.netA;});ss.vTeams[hi][1].forEach(p=>{vCum[p]+=vr.netB;});}}
+                  if (cfg.games.ct){const ct=computeCutThroat(n);[0,1,2,3].forEach(p=>cCum[p]+=ct[p]);}
+                  if (cfg.games.p3&&h.par===3){const p3=computePar3(n,ss.banker[hi],ss.p3mult[hi]);[0,1,2,3].forEach(p=>pCum[p]+=p3[p]);}
+                });
+                const d=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments[pi]||0);
+                return (
+                  <div key={pi} style={{ background: "#071507", borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
+                    <div style={{ fontSize: 11, color: COLORS[pi], marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{name.slice(0,5)}</div>
+                    <div style={{ fontSize: 18, fontWeight: "700", color: d>0?COLORS[0]:d<0?"#f87171":"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => { onLoadRound(importPreview); setImportPreview(null); }}
+                style={{ ...S.startBtn, flex: 2, fontSize: 15, padding: "13px" }}>Load Round</button>
+              <button onClick={() => setImportPreview(null)}
+                style={{ ...S.startBtn, flex: 1, fontSize: 15, padding: "13px", background: "#1e3a1e", color: COLORS[0] }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 40px" }}>
         {/* Header */}
-        <div style={{ textAlign: "center", padding: "32px 20px 20px", background: "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
-          <div style={{ fontSize: 52, marginBottom: 4 }}>🦈</div>
-          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: COLORS[0], letterSpacing: 4, margin: 0, lineHeight: 1 }}>
+        <div style={{ position: "relative", textAlign: "center", padding: "28px 20px 16px", background: "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
+          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "#5a8a5a", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-0.9.1</div>
+          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, color: COLORS[0], letterSpacing: 4, margin: 0, lineHeight: 1 }}>
             SWIMMING WITH SHARKS
           </h1>
-          <p style={{ color: "#4a7a4a", fontSize: 12, margin: "6px 0 0", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif" }}>
+          <p style={{ color: "#4a7a4a", fontSize: 11, margin: "4px 0 0", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif" }}>
             VEGAS · CUT THROAT · PAR 3
           </p>
-          {loadedCourse && (
-            <div style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 6, background: "#0d2210", border: "1px solid #1e3a1e", borderRadius: 20, padding: "5px 14px" }}>
-              <span style={{ fontSize: 13 }}>⛳</span>
-              <span style={{ fontSize: 13, color: "#e8f5e8", fontFamily: "'DM Sans', sans-serif", fontWeight: "500" }}>{loadedCourse.name}</span>
-              <span style={{ fontSize: 11, color: "#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>· {loadedCourse.tee}</span>
-            </div>
-          )}
         </div>
 
-        <div style={{ padding: "0 16px 100px" }}>
-          {/* Players */}
+        <div style={{ padding: "12px 16px 100px" }}>
+
+          {/* ── Players & Handicaps ── */}
           <Sect title="Players & Handicaps">
             {[0,1,2,3].map(i => (
-              <div key={i} style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center" }}>
+              <div key={i} style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center" }}>
                 <div style={{ ...S.dot, background: COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16 }}>{i+1}</div>
                 <input value={names[i]} placeholder={`Player ${i+1}`}
-                  style={{ ...S.inp, flex: 3, fontSize: 16, padding: "12px 14px" }}
+                  style={{ ...S.inp, flex: 3, fontSize: 16, padding: "11px 14px" }}
                   onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 0, background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
-                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.max(0,h[i]-1); setHcps(h); }}
-                    style={{ ...S.pmBtnInline }}>−</button>
-                  <span style={{ width: 36, textAlign: "center", color: "#e8f5e8", fontSize: 18, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcps[i]}</span>
-                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.min(36,h[i]+1); setHcps(h); }}
-                    style={{ ...S.pmBtnInline }}>+</button>
+                <div style={{ display: "flex", alignItems: "center", background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
+                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.max(0,h[i]-1); setHcps(h); }} style={S.pmBtnInline}>−</button>
+                  <span style={{ width: 34, textAlign: "center", color: "#e8f5e8", fontSize: 17, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcps[i]}</span>
+                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.min(36,h[i]+1); setHcps(h); }} style={S.pmBtnInline}>+</button>
                 </div>
               </div>
             ))}
-            <p style={{ fontSize: 11, color: "#3a6a3a", margin: "4px 8px 0", fontFamily: "'DM Sans', sans-serif" }}>Relative handicaps applied automatically</p>
           </Sect>
 
-          {/* Course Setup */}
-          <Sect title="Course Setup">
-            {loadedCourse && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#071507", border: "1px solid #1e3a1e", borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
-                <span style={{ fontSize: 20 }}>⛳</span>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: "600", color: "#e8f5e8", fontFamily: "'DM Sans', sans-serif" }}>{loadedCourse.name}</div>
-                  <div style={{ fontSize: 12, color: "#5a8a5a" }}>{loadedCourse.tee} tees</div>
-                </div>
-              </div>
-            )}
-            {storageMsg && (
-              <div style={{ background: "#0d2a0d", border: "1px solid #4ade80", borderRadius: 6, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: "#4ade80" }}>
-                {storageMsg}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button style={S.courseBtn} onClick={() => { setShowLib(l => !l); setShowSave(false); }}>
-                {showLib ? "Hide Library" : `Load Course${courses.length > 0 ? ` (${courses.length})` : ""}`}
+          {/* ── Course — collapsible ── */}
+          <CollapseSect title={`Course — ${loadedCourse ? loadedCourse.name : "Custom"}`} open={activeSection==="course"} onToggle={() => setActiveSection(s => s==="course" ? null : "course")}>
+            {storageMsg && <div style={{ background: "#0d2a0d", border: "1px solid #4ade80", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 13, color: "#4ade80" }}>{storageMsg}</div>}
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button style={S.courseBtn} onClick={() => { setShowLib(l=>!l); setShowSave(false); }}>
+                {showLib ? "Hide Library" : `📂 Library${courses.length>0?` (${courses.length})`:""}`}
               </button>
-              <button style={S.courseBtn} onClick={() => { setShowSave(s => !s); setShowLib(false); }}>
-                {showSave ? "Cancel" : "Save Course"}
+              <button style={S.courseBtn} onClick={() => { setShowSave(s=>!s); setShowLib(false); }}>
+                {showSave ? "Cancel" : "💾 Save Course"}
               </button>
             </div>
             {showSave && (
-              <div style={{ background: "#0d2210", border: "1px solid #1e3a1e", borderRadius: 8, padding: 14, marginBottom: 12 }}>
-                <input value={saveName} placeholder="Course name" style={{ ...S.inp, width: "100%", marginBottom: 8, padding: "12px 14px" }} onChange={e => setSaveName(e.target.value)} />
-                <input value={saveTee} placeholder="Tee box (e.g. Yellow)" style={{ ...S.inp, width: "100%", marginBottom: 10, padding: "12px 14px" }} onChange={e => setSaveTee(e.target.value)} />
-                <button className="start-btn" style={{ ...S.startBtn, fontSize: 14, padding: "12px" }} onClick={saveCourse}>Save</button>
+              <div style={{ background: "#071507", border: "1px solid #1e3a1e", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                <input value={saveName} placeholder="Course name" style={{ ...S.inp, width: "100%", marginBottom: 8, padding: "11px 14px" }} onChange={e => setSaveName(e.target.value)} />
+                <input value={saveTee} placeholder="Tee box" style={{ ...S.inp, width: "100%", marginBottom: 10, padding: "11px 14px" }} onChange={e => setSaveTee(e.target.value)} />
+                <button className="start-btn" style={{ ...S.startBtn, fontSize: 14, padding: "11px" }} onClick={saveCourse}>Save</button>
               </div>
             )}
             {showLib && (
-              <div style={{ background: "#0d2210", border: "1px solid #1e3a1e", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+              <div style={{ background: "#071507", border: "1px solid #1e3a1e", borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: COLORS[0], letterSpacing: 2, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>PRELOADED</div>
                 {PRESET_COURSES.map(c => (
-                  <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #1e3a1e" }}>
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #1e3a1e" }}>
                     <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
-                      <div style={{ fontSize: 15, color: "#e8f5e8", fontWeight: "600" }}>{c.name}</div>
-                      <div style={{ fontSize: 12, color: "#5a8a5a" }}>⛳ {c.tee}</div>
+                      <div style={{ fontSize: 14, color: "#e8f5e8", fontWeight: "600" }}>{c.name}</div>
+                      <div style={{ fontSize: 11, color: "#5a8a5a" }}>⛳ {c.tee}</div>
                     </div>
-                    <div style={{ fontSize: 11, color: "#3a6a3a", padding: "4px 8px", border: "1px solid #1e3a1e", borderRadius: 6 }}>built-in</div>
+                    <div style={{ fontSize: 11, color: "#3a6a3a", padding: "3px 8px", border: "1px solid #1e3a1e", borderRadius: 6 }}>built-in</div>
                   </div>
                 ))}
                 {courses.length > 0 && (
                   <>
-                    <div style={{ fontSize: 10, color: "#4a7a4a", letterSpacing: 2, margin: "12px 0 8px", fontFamily: "'DM Sans', sans-serif" }}>SAVED</div>
+                    <div style={{ fontSize: 10, color: "#4a7a4a", letterSpacing: 2, margin: "10px 0 8px", fontFamily: "'DM Sans', sans-serif" }}>SAVED</div>
                     {courses.map(c => (
-                      <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #1e3a1e" }}>
+                      <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #1e3a1e" }}>
                         <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
-                          <div style={{ fontSize: 15, color: "#e8f5e8", fontWeight: "600" }}>{c.name}</div>
-                          <div style={{ fontSize: 12, color: "#5a8a5a" }}>⛳ {c.tee}</div>
+                          <div style={{ fontSize: 14, color: "#e8f5e8", fontWeight: "600" }}>{c.name}</div>
+                          <div style={{ fontSize: 11, color: "#5a8a5a" }}>⛳ {c.tee}</div>
                         </div>
-                        <button onClick={() => deleteCourse(c.id)} style={{ background: "transparent", border: "1px solid #5a2a2a", borderRadius: 6, color: "#f87171", cursor: "pointer", fontSize: 12, padding: "6px 12px" }}>✕</button>
+                        <button onClick={() => deleteCourse(c.id)} style={{ background: "transparent", border: "1px solid #5a2a2a", borderRadius: 6, color: "#f87171", cursor: "pointer", fontSize: 12, padding: "5px 10px" }}>✕</button>
                       </div>
                     ))}
                   </>
@@ -353,7 +435,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
                 </thead>
                 <tbody>
                   {Array.from({ length: 9 }, (_, row) => (
-                    <tr key={row} style={{ background: row % 2 === 0 ? "#071507" : "#060f06" }}>
+                    <tr key={row} style={{ background: row%2===0?"#071507":"#060f06" }}>
                       {[row, row+9].map(hi => (
                         <React.Fragment key={hi}>
                           <td style={{ ...S.td, color: "#5a8a5a", fontWeight: "600" }}>{hi+1}</td>
@@ -376,105 +458,113 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
                 </tbody>
               </table>
             </div>
-          </Sect>
+          </CollapseSect>
 
-          {/* Games */}
-          <Sect title="Games">
-            <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
-              {[["vegas","Vegas"],["ct","Cut Throat"],["p3","Par 3 Banker"]].map(([key, label]) => {
+          {/* ── Games & Stakes — collapsible ── */}
+          <CollapseSect title="Games & Stakes" open={activeSection==="games"} onToggle={() => setActiveSection(s => s==="games" ? null : "games")}>
+            {/* Game toggles */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {[["vegas","Vegas"],["ct","Cut Throat"],["p3","Par 3 Banker"]].map(([key,label]) => {
                 const on = games[key];
                 return (
                   <button key={key} onClick={() => setGames(g => ({ ...g, [key]: !g[key] }))}
-                    style={{ flex: 1, padding: "12px 6px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: on ? "700" : "400",
-                      border: `1px solid ${on ? COLORS[0] : "#1e3a1e"}`,
-                      background: on ? COLORS[0] + "22" : "transparent",
-                      color: on ? COLORS[0] : "#4a7a4a",
+                    style={{ flex: 1, padding: "11px 4px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: on?"700":"400",
+                      border: `1px solid ${on?COLORS[0]:"#1e3a1e"}`,
+                      background: on?COLORS[0]+"22":"transparent",
+                      color: on?COLORS[0]:"#4a7a4a",
                       fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s" }}>
-                    {on ? "✓ " : ""}{label}
+                    {on?"✓ ":""}{label}
                   </button>
                 );
               })}
             </div>
-          </Sect>
-
-          {/* $ Per Point */}
-          <Sect title="$ Per Point">
+            {/* $ per point */}
             {[["Vegas","vegas",vegasVal,setVegasVal],["Cut Throat","ct",ctVal,setCtVal],["Par 3 Banker","p3",p3Val,setP3Val]].map(([label,key,val,setter]) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, opacity: games[key] ? 1 : 0.35, pointerEvents: games[key] ? "auto" : "none" }}>
-                <span style={{ fontSize: 15, color: "#ccc", fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 0, background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
-                  <button className="pm-btn" onClick={() => setter(v => Math.max(1, v-1))} style={S.pmBtnInline}>−</button>
-                  <span style={{ width: 44, textAlign: "center", color: COLORS[0], fontSize: 18, fontWeight: "700" }}>${val}</span>
+              <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, opacity: games[key]?1:0.35, pointerEvents: games[key]?"auto":"none" }}>
+                <span style={{ fontSize: 14, color: "#ccc", fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
+                <div style={{ display: "flex", alignItems: "center", background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
+                  <button className="pm-btn" onClick={() => setter(v => Math.max(1,v-1))} style={S.pmBtnInline}>−</button>
+                  <span style={{ width: 42, textAlign: "center", color: COLORS[0], fontSize: 17, fontWeight: "700" }}>${val}</span>
                   <button className="pm-btn" onClick={() => setter(v => v+1)} style={S.pmBtnInline}>+</button>
                 </div>
               </div>
             ))}
-            <div style={{ borderTop: "1px solid #1e3a1e", paddingTop: 12, marginTop: 4 }}>
+            <div style={{ borderTop: "1px solid #1e3a1e", paddingTop: 10, marginTop: 2 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 15, color: "#ccc", fontFamily: "'DM Sans', sans-serif" }}>HCP adjustment</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 0, background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
-                  <button className="pm-btn" onClick={() => setHcpThreshold(v => Math.max(1, v-1))} style={S.pmBtnInline}>−</button>
-                  <span style={{ width: 44, textAlign: "center", color: COLORS[0], fontSize: 18, fontWeight: "700" }}>${hcpThreshold}</span>
+                <span style={{ fontSize: 14, color: "#ccc", fontFamily: "'DM Sans', sans-serif" }}>HCP adjustment</span>
+                <div style={{ display: "flex", alignItems: "center", background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
+                  <button className="pm-btn" onClick={() => setHcpThreshold(v => Math.max(1,v-1))} style={S.pmBtnInline}>−</button>
+                  <span style={{ width: 42, textAlign: "center", color: COLORS[0], fontSize: 17, fontWeight: "700" }}>${hcpThreshold}</span>
                   <button className="pm-btn" onClick={() => setHcpThreshold(v => v+1)} style={S.pmBtnInline}>+</button>
                 </div>
               </div>
             </div>
-          </Sect>
+          </CollapseSect>
 
-        {/* Round History */}
-        {savedRounds.length > 0 && (
-          <Sect title="Recent Rounds">
-            {savedRounds.map((round, idx) => (
-              <div key={round.savedAt} style={{ background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: "600", color: "#e8f5e8", fontFamily: "'DM Sans', sans-serif" }}>{round.courseName || "Round"}</div>
-                    <div style={{ fontSize: 11, color: "#4a7a4a", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>{round.date}</div>
+          {/* ── Recent Rounds — collapsible ── */}
+          {savedRounds.length > 0 && (
+            <CollapseSect title={`Recent Rounds (${savedRounds.length})`} open={activeSection==="history"} onToggle={() => setActiveSection(s => s==="history" ? null : "history")}>
+              {savedRounds.map((round) => (
+                <div key={round.savedAt} style={{ background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: "600", color: "#e8f5e8", fontFamily: "'DM Sans', sans-serif" }}>{round.courseName || "Round"}</div>
+                      <div style={{ fontSize: 11, color: "#4a7a4a", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>{round.date}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => exportRound(round)}
+                        style={{ padding: "6px 12px", background: "transparent", border: "1px solid #2a5a2a", borderRadius: 6, color: COLORS[0], cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                        ↑ Export
+                      </button>
+                      <button onClick={() => onLoadRound(round)}
+                        style={{ padding: "6px 12px", background: COLORS[0]+"22", border: `1px solid ${COLORS[0]}`, borderRadius: 6, color: COLORS[0], cursor: "pointer", fontSize: 12, fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>
+                        Resume
+                      </button>
+                    </div>
                   </div>
-                  <button onClick={() => onLoadRound(round)}
-                    style={{ padding: "7px 14px", background: COLORS[0]+"22", border: `1px solid ${COLORS[0]}`, borderRadius: 6, color: COLORS[0], cursor: "pointer", fontSize: 12, fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>
-                    Resume
-                  </button>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4 }}>
+                    {round.config.names.map((name, pi) => {
+                      const cfg = round.config;
+                      const ss = cfg._savedState;
+                      if (!ss) return null;
+                      const vCum=[0,0,0,0],cCum=[0,0,0,0],pCum=[0,0,0,0];
+                      cfg.holes.forEach((h,hi) => {
+                        if (!ss.inPlay[hi]) return;
+                        const g=ss.gross[hi];
+                        const n=[0,1,2,3].map(p=>nettScore(g[p],ss.liveHcps[p],h.si,h.par));
+                        if(cfg.games.vegas){const vr=computeVegas(ss.vTeams[hi],g,n,h.par);if(vr){ss.vTeams[hi][0].forEach(p=>{vCum[p]+=vr.netA;});ss.vTeams[hi][1].forEach(p=>{vCum[p]+=vr.netB;});}}
+                        if(cfg.games.ct){const ct=computeCutThroat(n);[0,1,2,3].forEach(p=>cCum[p]+=ct[p]);}
+                        if(cfg.games.p3&&h.par===3){const p3=computePar3(n,ss.banker[hi],ss.p3mult[hi]);[0,1,2,3].forEach(p=>pCum[p]+=p3[p]);}
+                      });
+                      const d=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments[pi]||0);
+                      return (
+                        <div key={pi} style={{ textAlign: "center", background: "#0d2210", borderRadius: 6, padding: "6px 4px" }}>
+                          <div style={{ fontSize: 10, color: COLORS[pi], fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>{name.slice(0,5)}</div>
+                          <div style={{ fontSize: 16, fontWeight: "700", color: d>0?COLORS[0]:d<0?"#f87171":"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                {/* Player totals */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4 }}>
-                  {round.config.names.map((name, pi) => {
-                    const cfg = round.config;
-                    const ss = cfg._savedState;
-                    if (!ss) return null;
-                    // Recompute dollars from saved state
-                    const vCum = [0,0,0,0], cCum = [0,0,0,0], pCum = [0,0,0,0];
-                    cfg.holes.forEach((h, hi) => {
-                      if (!ss.inPlay[hi]) return;
-                      const g = ss.gross[hi];
-                      const n = [0,1,2,3].map(p => nettScore(g[p], ss.liveHcps[p], h.si, h.par));
-                      if (cfg.games.vegas) {
-                        const vr = computeVegas(ss.vTeams[hi], g, n, h.par);
-                        if (vr) { ss.vTeams[hi][0].forEach(p => { vCum[p]+=vr.netA; }); ss.vTeams[hi][1].forEach(p => { vCum[p]+=vr.netB; }); }
-                      }
-                      if (cfg.games.ct) { const ct=computeCutThroat(n); [0,1,2,3].forEach(p => cCum[p]+=ct[p]); }
-                      if (cfg.games.p3 && h.par===3) { const p3=computePar3(n, ss.banker[hi], ss.p3mult[hi]); [0,1,2,3].forEach(p => pCum[p]+=p3[p]); }
-                    });
-                    const d = (cfg.games.vegas?vCum[pi]*cfg.vegasVal:0) + (cfg.games.ct?cCum[pi]*cfg.ctVal:0) + (cfg.games.p3?pCum[pi]*cfg.p3Val:0) + (ss.adjustments[pi]||0);
-                    return (
-                      <div key={pi} style={{ textAlign: "center", background: "#0d2210", borderRadius: 6, padding: "6px 4px" }}>
-                        <div style={{ fontSize: 10, color: COLORS[pi], fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>{name.slice(0,5)}</div>
-                        <div style={{ fontSize: 16, fontWeight: "700", color: d>0?COLORS[0]:d<0?"#f87171":"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </Sect>
-        )}
+              ))}
+            </CollapseSect>
+          )}
+
+          {/* ── Import ── */}
+          <input ref={importRef} type="file" accept=".json" style={{ display: "none" }} onChange={handleImport} />
+          <button onClick={() => importRef.current.click()}
+            style={{ ...S.courseBtn, width: "100%", marginBottom: 4, textAlign: "center" }}>
+            ↓ Import Round
+          </button>
+
         </div>
       </div>
+
       {/* Sticky START button */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "12px 16px 16px", background: "linear-gradient(0deg, #0a1a0a 70%, transparent)", maxWidth: 480, margin: "0 auto" }}>
         <button className="start-btn"
           style={{ ...S.startBtn, fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 3, padding: "18px" }}
-          onClick={() => onStart({ names: names.map((n,i) => n.trim()||`Player ${i+1}`), hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games })}>
+          onClick={() => onStart({ names: names.map((n,i) => n.trim()||`Player ${i+1}`), hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games, courseName: loadedCourse ? `${loadedCourse.name} — ${loadedCourse.tee}` : "Custom Course" })}>
           START ROUND →
         </button>
       </div>
@@ -488,6 +578,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
 function Scorecard({ config, onBack, onSave }) {
   const { names, hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games } = config;
   const saved = config._savedState;
+  // Stable ID for this round — used to upsert instead of creating duplicate saves
+  const roundId = React.useRef(config._roundId || Date.now()).current;
   const [gross, setGross] = useState(() => saved?.gross || Array.from({length:18}, (_, hi) => Array(4).fill(String(holes[hi].par))));
   const [vTeams, setVTeams] = useState(() => saved?.vTeams || Array.from({length:18}, () => [[0,1],[2,3]]));
   const [banker, setBanker] = useState(() => saved?.banker || Array(18).fill(0));
@@ -562,6 +654,9 @@ function Scorecard({ config, onBack, onSave }) {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap');
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        html { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; }
+        body { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; margin: 0; }
+        #root { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: none; }
         input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
         input[type=number] { -moz-appearance: textfield; }
         .pm-btn:active { transform: scale(0.9) !important; background: #2a5a2a !important; }
@@ -623,7 +718,7 @@ function Scorecard({ config, onBack, onSave }) {
         )}
       </div>
 
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 100px" }}>
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px" }}>
         {view === "setup" && (
           <>
             <Sect title="Handicaps">
@@ -708,7 +803,8 @@ function Scorecard({ config, onBack, onSave }) {
                 const updatedInPlay = n;
                 setTimeout(() => {
                   onSave({
-                    config: { ...config, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments } },
+                    roundId,
+                    config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments } },
                     date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                     courseName: config.courseName || "Round",
                   });
@@ -976,13 +1072,26 @@ function Scorecard({ config, onBack, onSave }) {
             liveHcps={liveHcps} hcpThreshold={hcpThreshold} games={games}
             saveMsg={saveMsg}
             onSave={() => {
-              onSave({
-                config: { ...config, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, adjustments } },
+              const roundData = {
+                roundId,
+                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, adjustments } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
-              });
+                savedAt: Date.now(),
+              };
+              onSave(roundData);
               setSaveMsg("Round saved ✓");
               setTimeout(() => setSaveMsg(""), 2500);
+            }}
+            onExport={() => {
+              const roundData = {
+                roundId,
+                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, adjustments } },
+                date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
+                courseName: config.courseName || "Round",
+                savedAt: Date.now(),
+              };
+              exportRound(roundData);
             }}
             onHole={hi => { setHoleIdx(hi); setView("hole"); }} />
         ))}
@@ -1016,7 +1125,7 @@ function Scorecard({ config, onBack, onSave }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TOTALS VIEW
 // ─────────────────────────────────────────────────────────────────────────────
-function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dollars, vegasVal, ctVal, p3Val, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, onSave, saveMsg, onHole }) {
+function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dollars, vegasVal, ctVal, p3Val, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, onSave, onExport, saveMsg, onHole }) {
   const [tab, setTab] = useState("board");
   const [showHcp, setShowHcp] = useState(false);
   const [showAdj, setShowAdj] = useState(false);
@@ -1031,13 +1140,16 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
 
   return (
     <>
-      {/* Save Round button */}
-      <div style={{ marginBottom: 14 }}>
-        <button onClick={onSave} style={{ width: "100%", padding: "13px", background: "#0d2210", color: COLORS[0], border: "1px solid #2a5a2a", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: "600", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>
+      {/* Save + Export buttons */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <button onClick={onSave} style={{ flex: 2, padding: "13px", background: "#0d2210", color: COLORS[0], border: "1px solid #2a5a2a", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>
           💾 Save Round
         </button>
-        {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: COLORS[0], marginTop: 6, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
+        <button onClick={onExport} style={{ flex: 1, padding: "13px", background: "transparent", color: COLORS[0], border: "1px solid #2a5a2a", borderRadius: 10, cursor: "pointer", fontSize: 14, fontFamily: "'DM Sans', sans-serif" }}>
+          ↑ Export
+        </button>
       </div>
+      {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: COLORS[0], marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
         {[["board","TOTALS"],["vegas","VEGAS"],["ct","CUT THROAT"],["par3","PAR 3"]].filter(([t]) => t==="board" || (t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3)).map(([t,label]) => (
           <button key={t} className="tab-btn" onClick={() => setTab(t)}
@@ -1425,7 +1537,14 @@ export default function App() {
 
   function saveRound(roundData) {
     const entry = { ...roundData, savedAt: Date.now() };
-    const updated = [entry, ...savedRounds].slice(0, 3);
+    // Upsert: replace existing record with same roundId, otherwise prepend
+    const existing = savedRounds.findIndex(r => r.roundId === entry.roundId);
+    let updated;
+    if (existing >= 0) {
+      updated = savedRounds.map((r, i) => i === existing ? entry : r);
+    } else {
+      updated = [entry, ...savedRounds].slice(0, 3);
+    }
     setSavedRounds(updated);
     try { localStorage.setItem("sws_rounds", JSON.stringify(updated)); } catch (_) {}
   }
