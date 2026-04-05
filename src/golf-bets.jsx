@@ -221,12 +221,26 @@ async function exportRound(roundData) {
   URL.revokeObjectURL(url);
 }
 
+function haptic(style = "light") {
+  try {
+    if (window.navigator && window.navigator.vibrate) {
+      window.navigator.vibrate(style === "light" ? 10 : 20);
+    }
+    // iOS Taptic Engine via AudioContext workaround is not reliable
+    // Best effort via vibration API
+  } catch(_) {}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SETUP
 // ─────────────────────────────────────────────────────────────────────────────
 function Setup({ onStart, savedRounds = [], onLoadRound }) {
-  const [names, setNames] = useState(["A", "B", "C", "D"]);
-  const [hcps, setHcps] = useState([0, 0, 0, 0]);
+  const [names, setNames] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("sws_names") || '["A","B","C","D"]'); } catch { return ["A","B","C","D"]; }
+  });
+  const [hcps, setHcps] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("sws_hcps") || "[0,0,0,0]"); } catch { return [0,0,0,0]; }
+  });
   const [holes, setHoles] = useState(DEFAULT_HOLES.map(h => ({ ...h })));
   const [vegasVal, setVegasVal] = useState(1);
   const [ctVal, setCtVal] = useState(3);
@@ -236,6 +250,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
   const [showLib, setShowLib] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveTee, setSaveTee] = useState("");
+  const [saveNote, setSaveNote] = useState("");
   const [showSave, setShowSave] = useState(false);
   const [storageMsg, setStorageMsg] = useState("");
   const [loadedCourse, setLoadedCourse] = useState(PRESET_COURSES[0]);
@@ -253,11 +268,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
 
   async function saveCourse() {
     if (!saveName.trim()) { setStorageMsg("Please enter a course name."); return; }
-    const entry = { id: Date.now(), name: saveName.trim(), tee: saveTee.trim() || "—", holes: holes.map(h => ({ ...h })) };
+    const entry = { id: Date.now(), name: saveName.trim(), tee: saveTee.trim() || "—", note: saveNote.trim(), holes: holes.map(h => ({ ...h })) };
     const updated = [...courses, entry];
     try {
       localStorage.setItem("swimmingWithSharks_courses", JSON.stringify(updated));
-      setCourses(updated); setSaveName(""); setSaveTee(""); setShowSave(false);
+      setCourses(updated); setSaveName(""); setSaveTee(""); setSaveNote(""); setShowSave(false);
       setStorageMsg(`"${entry.name} / ${entry.tee}" saved.`);
       setTimeout(() => setStorageMsg(""), 2500);
     } catch (_) { setStorageMsg("Save failed."); }
@@ -351,7 +366,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 40px" }}>
         {/* Header */}
         <div style={{ position: "relative", textAlign: "center", padding: "28px 20px 16px", background: "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
-          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "#5a8a5a", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-0.9.1</div>
+          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "#5a8a5a", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-0.9.2</div>
           <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, color: COLORS[0], letterSpacing: 4, margin: 0, lineHeight: 1 }}>
             SWIMMING WITH SHARKS
           </h1>
@@ -369,11 +384,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
                 <div style={{ ...S.dot, background: COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16 }}>{i+1}</div>
                 <input value={names[i]} placeholder={`Player ${i+1}`}
                   style={{ ...S.inp, flex: 3, fontSize: 16, padding: "11px 14px" }}
-                  onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); }} />
+                  onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); try { localStorage.setItem("sws_names", JSON.stringify(n)); } catch(_){} }} />
                 <div style={{ display: "flex", alignItems: "center", background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
-                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.max(0,h[i]-1); setHcps(h); }} style={S.pmBtnInline}>−</button>
+                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.max(0,h[i]-1); setHcps(h); try{localStorage.setItem("sws_hcps",JSON.stringify(h));}catch(_){} }} style={S.pmBtnInline}>−</button>
                   <span style={{ width: 34, textAlign: "center", color: "#e8f5e8", fontSize: 17, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcps[i]}</span>
-                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.min(36,h[i]+1); setHcps(h); }} style={S.pmBtnInline}>+</button>
+                  <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.min(36,h[i]+1); setHcps(h); try{localStorage.setItem("sws_hcps",JSON.stringify(h));}catch(_){} }} style={S.pmBtnInline}>+</button>
                 </div>
               </div>
             ))}
@@ -393,7 +408,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
             {showSave && (
               <div style={{ background: "#071507", border: "1px solid #1e3a1e", borderRadius: 8, padding: 12, marginBottom: 10 }}>
                 <input value={saveName} placeholder="Course name" style={{ ...S.inp, width: "100%", marginBottom: 8, padding: "11px 14px" }} onChange={e => setSaveName(e.target.value)} />
-                <input value={saveTee} placeholder="Tee box" style={{ ...S.inp, width: "100%", marginBottom: 10, padding: "11px 14px" }} onChange={e => setSaveTee(e.target.value)} />
+                <input value={saveTee} placeholder="Tee box" style={{ ...S.inp, width: "100%", marginBottom: 8, padding: "11px 14px" }} onChange={e => setSaveTee(e.target.value)} />
+                <input value={saveNote} placeholder="Note (e.g. Yellow tees — members only)" style={{ ...S.inp, width: "100%", marginBottom: 10, padding: "11px 14px", fontSize: 13 }} onChange={e => setSaveNote(e.target.value)} />
                 <button className="start-btn" style={{ ...S.startBtn, fontSize: 14, padding: "11px" }} onClick={saveCourse}>Save</button>
               </div>
             )}
@@ -605,16 +621,36 @@ function Scorecard({ config, onBack, onSave }) {
     if (touchStartX.current === null || view !== "hole") return;
     const dx = e.changedTouches[0].clientX - touchStartX.current;
     const dy = e.changedTouches[0].clientY - touchStartY.current;
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
-      if (dx < 0 && holeIdx < 17) setHoleIdx(h => h + 1);
-      if (dx > 0 && holeIdx > 0) setHoleIdx(h => h - 1);
+    // Swipe horizontally anywhere on screen to navigate holes
+    // Only trigger if horizontal movement is dominant and exceeds 60px threshold
+    if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 60) {
+      if (dx < 0 && holeIdx < 17) { haptic("medium"); setHoleIdx(h => h + 1); }
+      if (dx > 0 && holeIdx > 0) { haptic("medium"); setHoleIdx(h => h - 1); }
     }
     touchStartX.current = null;
     touchStartY.current = null;
   }, [view, holeIdx]);
 
   function setScore(hi, pi, val) {
-    setGross(prev => { const n=prev.map(r=>[...r]); n[hi][pi]=val; return n; });
+    setGross(prev => {
+      const n = prev.map(r => [...r]);
+      n[hi][pi] = val;
+      // Auto mark hole as In Play and save
+      setInPlay(prevInPlay => {
+        const updatedInPlay = [...prevInPlay];
+        updatedInPlay[hi] = true;
+        setTimeout(() => {
+          onSave({
+            roundId,
+            config: { ...config, _roundId: roundId, _savedState: { gross: n, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments } },
+            date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
+            courseName: config.courseName || "Round",
+          });
+        }, 0);
+        return updatedInPlay;
+      });
+      return n;
+    });
   }
   function setVTeam(hi, side, players) {
     setVTeams(prev => { const n=prev.map(r=>[r[0].slice(),r[1].slice()]); n[hi][side]=players; return n; });
@@ -648,6 +684,17 @@ function Scorecard({ config, onBack, onSave }) {
   const h = holes[holeIdx];
   const res = results[holeIdx];
   const completedCount = inPlay.filter(Boolean).length;
+
+  // Running gross total vs par through in-play holes
+  const runningTotal = [0,1,2,3].map(pi => {
+    let strokes = 0, par = 0;
+    results.forEach((r, hi) => {
+      if (!inPlay[hi]) return;
+      const g = parseInt(r.g[pi], 10);
+      if (!isNaN(g)) { strokes += g; par += holes[hi].par; }
+    });
+    return strokes === 0 ? null : strokes - par;
+  });
 
   return (
     <div style={S.page} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
@@ -685,7 +732,7 @@ function Scorecard({ config, onBack, onSave }) {
             </select>
             <div>
               <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: "#6b9e6b" }}>Par {h.par}</span>
-              <span style={{ fontSize: 11, color: "#3a6a3a", marginLeft: 6 }}>SI {h.si}</span>
+              <span style={{ fontSize: 13, color: "#6b9e6b", marginLeft: 6, fontWeight: "600" }}>SI {h.si}</span>
             </div>
           </div>
           <div style={{ display: "flex", gap: 5 }}>
@@ -708,12 +755,33 @@ function Scorecard({ config, onBack, onSave }) {
         </div>
         {/* Hole progress dots */}
         {view === "hole" && (
-          <div style={{ display: "flex", gap: 3, padding: "0 14px 10px", overflowX: "auto" }}>
+          <div style={{ display: "flex", gap: 3, padding: "0 14px 6px", overflowX: "auto" }}>
             {Array.from({length:18}, (_,i) => (
               <div key={i} onClick={() => setHoleIdx(i)}
                 style={{ width: i===holeIdx?24:8, height: 8, borderRadius: 4, flexShrink: 0, cursor: "pointer", transition: "all 0.2s",
                   background: i===holeIdx ? COLORS[0] : inPlay[i] ? "#2a5a2a" : "#1e3a1e" }} />
             ))}
+          </div>
+        )}
+        {/* Running totals row */}
+        {view === "hole" && completedCount > 0 && (
+          <div style={{ display: "flex", gap: 4, padding: "0 14px 8px", justifyContent: "flex-end" }}>
+            {[0,1,2,3].map(pi => {
+              const t = runningTotal[pi];
+              if (t === null) return null;
+              const col = t < 0 ? COLORS[0] : t === 0 ? "#60a5fa" : "#f87171";
+              return (
+                <div key={pi} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS[pi] }} />
+                  <span style={{ fontSize: 11, color: col, fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>
+                    {t > 0 ? "+" : ""}{t}
+                  </span>
+                </div>
+              );
+            })}
+            <span style={{ fontSize: 10, color: "#3a6a3a", fontFamily: "'DM Sans', sans-serif", marginLeft: 2 }}>
+              thru {completedCount}
+            </span>
           </div>
         )}
       </div>
@@ -760,7 +828,19 @@ function Scorecard({ config, onBack, onSave }) {
                 {[0,1,2,3].map(pi => (
                   <div key={pi} style={{ textAlign: "center" }}>
                     <div style={{ color: COLORS[pi], fontWeight: "600", fontSize: 14, fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{names[pi]}</div>
-                    <div style={{ fontSize: 10, color: "#4a7a4a" }}>+{strokesGiven(liveHcps[pi], h.si)}</div>
+                    {(() => {
+                      const strokes = strokesGiven(liveHcps[pi], h.si);
+                      const strokeColor = strokes === 2 ? COLORS[0] : strokes === 1 ? "#6ab87a" : "#3a5a3a";
+                      const strokeWeight = strokes > 0 ? "600" : "400";
+                      return (
+                        <div style={{ fontSize: 10, color: "#3a5a3a" }}>
+                          HCP {liveHcps[pi]}
+                          <span style={{ color: strokeColor, fontWeight: strokeWeight, marginLeft: 4 }}>
+                            {strokes > 0 ? `+${strokes} ●` : "·"}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>
@@ -771,10 +851,10 @@ function Scorecard({ config, onBack, onSave }) {
                   const grossDiff = g - h.par;
                   return (
                     <div key={pi} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                      <button className="score-btn" onClick={() => setScore(holeIdx, pi, String(g+1))}
+                      <button className="score-btn" onClick={() => { const next=g+1; const par=holes[holeIdx].par; if(next >= par+5 || next <= par-2) { haptic("strong"); window.navigator?.vibrate?.([30,20,30]); } else { haptic(); } setScore(holeIdx, pi, String(next)); }}
                         style={{ width: "100%", height: 44, borderRadius: 8, background: "#1a3a1a", border: "1px solid #2a5a2a", color: COLORS[0], fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s" }}>+</button>
                       <ScoreBadge score={g} diff={grossDiff} large />
-                      <button className="score-btn" onClick={() => setScore(holeIdx, pi, String(Math.max(1, g-1)))}
+                      <button className="score-btn" onClick={() => { const next=Math.max(1,g-1); const par=holes[holeIdx].par; if(next >= par+5 || next <= par-2) { haptic("strong"); window.navigator?.vibrate?.([30,20,30]); } else { haptic(); } setScore(holeIdx, pi, String(next)); }}
                         style={{ width: "100%", height: 44, borderRadius: 8, background: "#1a3a1a", border: "1px solid #2a5a2a", color: COLORS[0], fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s" }}>−</button>
                     </div>
                   );
@@ -1234,6 +1314,66 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
             </div>
             <button onClick={() => setAdjustments([0,0,0,0])} style={{ ...S.navBtn, width: "100%", marginTop: 12, fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>Reset Adjustments</button>
           </CollapseSect>
+
+          {/* $ Over Round chart — bottom of totals */}
+          {(() => {
+            const cumData = [];
+            const running = [0,0,0,0];
+            for (let hi = 0; hi < 18; hi++) {
+              if (!inPlay[hi]) continue;
+              const r = results[hi];
+              [0,1,2,3].forEach(pi => {
+                running[pi] += (games.vegas?r.vd[pi]*vegasVal:0) + (games.ct?r.ct[pi]*ctVal:0) + (games.p3?r.p3[pi]*p3Val:0);
+              });
+              cumData.push({ hi, values: [...running] });
+            }
+            if (cumData.length < 2) return null;
+            const allVals = cumData.flatMap(d => d.values);
+            const minV = Math.min(0, ...allVals);
+            const maxV = Math.max(0, ...allVals);
+            const range = maxV - minV || 1;
+            const chartH = 80;
+            const zeroY = chartH * (maxV / range);
+            const xStep = 20;
+            return (
+              <Sect title="$ Over Round">
+                <div style={{ background: "#071507", borderRadius: 8, border: "1px solid #1e3a1e", padding: "12px 8px 8px", overflowX: "auto" }}>
+                  <svg width="100%" viewBox={`0 0 ${cumData.length * xStep + 10} ${chartH + 20}`} style={{ display: "block", minWidth: 200 }}>
+                    <line x1="5" y1={zeroY + 4} x2={cumData.length * xStep + 5} y2={zeroY + 4}
+                      stroke="#1e3a1e" strokeWidth="0.8" strokeDasharray="3,3"/>
+                    {[0,1,2,3].map(pi => {
+                      const pts = cumData.map((d, idx) => {
+                        const x = idx * xStep + 15;
+                        const y = 4 + chartH * (1 - (d.values[pi] - minV) / range);
+                        return `${x},${y}`;
+                      }).join(" ");
+                      return <polyline key={pi} points={pts} fill="none" stroke={COLORS[pi]} strokeWidth="1" strokeLinejoin="round" strokeLinecap="round"/>;
+                    })}
+                    {[0,1,2,3].map(pi => {
+                      const last = cumData[cumData.length - 1];
+                      const x = (cumData.length - 1) * xStep + 15;
+                      const y = 4 + chartH * (1 - (last.values[pi] - minV) / range);
+                      return <circle key={pi} cx={x} cy={y} r="2.5" fill={COLORS[pi]}/>;
+                    })}
+                    {cumData.map((d, idx) => (
+                      <text key={idx} x={idx * xStep + 15} y={chartH + 16}
+                        textAnchor="middle" fontSize="8" fill="#3a6a3a" fontFamily="sans-serif">
+                        {d.hi + 1}
+                      </text>
+                    ))}
+                  </svg>
+                  <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 4 }}>
+                    {[0,1,2,3].map(pi => (
+                      <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <div style={{ width: 12, height: 2, background: COLORS[pi], borderRadius: 1 }}/>
+                        <span style={{ fontSize: 10, color: COLORS[pi], fontFamily: "'DM Sans', sans-serif" }}>{names[pi]}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Sect>
+            );
+          })()}
         </>
       )}
 
