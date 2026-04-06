@@ -340,7 +340,10 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
   table.scorecard th:nth-child(3), table.scorecard td:nth-child(3) { width: 22px; }
   .pos { color: #16a34a; font-weight: 700; }
   .neg { color: #dc2626; font-weight: 700; }
-  .total-row td { background: #0a1a0a; color: #4ade80; font-weight: 700; font-size: 12px; }
+  .total-row td { background: #0a1a0a; font-weight: 700; font-size: 12px; }
+  .total-row td:first-child { color: #4ade80; }
+  .total-row .pos { color: #4ade80 !important; }
+  .total-row .neg { color: #f87171 !important; }
   .out-row td, .in-row td { background: #e8f5e8; font-weight: 700; font-size: 11px; }
   .footer { text-align: center; color: #bbb; font-size: 9px; margin-top: 8px; border-top: 1px solid #eee; padding-top: 6px; }
   @media print {
@@ -354,7 +357,7 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
   <div class="header">
     <div>
       <h1>SWIMMING WITH SHARKS</h1>
-      <div class="header-sub">VEGAS · CUT THROAT · PAR 3</div>
+      <div class="header-sub">VEGAS · CUT THROAT · BANKER</div>
     </div>
     <div class="header-right" style="color:#e8f5e8">
       <div>${dateStr}</div>
@@ -559,7 +562,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
             SWIMMING WITH SHARKS
           </h1>
           <p style={{ color: "#4a7a4a", fontSize: 11, margin: "4px 0 0", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif" }}>
-            VEGAS · CUT THROAT · PAR 3
+            VEGAS · CUT THROAT · BANKER
           </p>
         </div>
 
@@ -1320,7 +1323,7 @@ function Scorecard({ config, onBack, onSave }) {
                     })}
                   </div>
                 )}
-                {/* Par 3 row — only on par 3s */}
+                {/* Banker row — only on par 3s */}
                 {games.p3 && h.par === 3 && (
                   <div style={{ display: "grid", gridTemplateColumns: `100px repeat(4, 1fr)` }}>
                     <div style={{ padding: "8px 10px", fontSize: 12, color: "#5a8a5a", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Banker</div>
