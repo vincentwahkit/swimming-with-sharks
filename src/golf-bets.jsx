@@ -193,7 +193,7 @@ function makeFilename(courseName) {
     .join("")
     .replace(/[^a-zA-Z0-9]/g,"")
     .slice(0,10);
-  return `sws.${date}.${course}.${time}.json`;
+  return `sws.EX.${date}.${course}.${time}.json`;
 }
 
 async function exportRound(roundData) {
@@ -250,6 +250,9 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
   const dateStr = now.toLocaleDateString("en-SG", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
   const hour = now.getHours();
   const timeOfDay = hour < 12 ? "Morning" : "Afternoon";
+  const dateStamp = now.toISOString().slice(0,10).replace(/-/g,"");
+  const courseSlug = (courseName||"Custom").split(/[\s\-_\/]+/).map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join("").replace(/[^a-zA-Z0-9]/g,"").slice(0,10);
+  const reportTitle = `SWS.${dateStamp}.${courseSlug}.${timeOfDay}`;
 
   // Score label helper
   function scoreBadgeHtml(score, par, active) {
@@ -317,7 +320,7 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Swimming With Sharks — Round Report</title>
+<title>${reportTitle}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 12px 16px; color: #222; font-size: 11px; }
