@@ -231,6 +231,192 @@ function haptic(style = "light") {
   } catch(_) {}
 }
 
+function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vegasCum, ctCum, p3Cum, vegasVal, ctVal, p3Val, adjustments, games, courseName, roundStartTime }) {
+  // Relative HCPs
+  const minHcp = Math.min(...liveHcps);
+  const relHcps = liveHcps.map(h => h - minHcp);
+
+  // Next round HCP adjustment
+  const strokeAdj = [0,1,2,3].map(i => {
+    const strokes = Math.floor(Math.abs(dollars[i]) / 25);
+    return dollars[i] > 0 ? -strokes : dollars[i] < 0 ? strokes : 0;
+  });
+  const adjHcps = [0,1,2,3].map(i => liveHcps[i] + strokeAdj[i]);
+  const minAdj = Math.min(...adjHcps);
+  const nextRelHcps = adjHcps.map(h => h - minAdj);
+
+  // Date and time of day
+  const now = roundStartTime ? new Date(roundStartTime) : new Date();
+  const dateStr = now.toLocaleDateString("en-SG", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+  const hour = now.getHours();
+  const timeOfDay = hour < 12 ? "Morning" : "Afternoon";
+
+  // Score label helper
+  function scoreBadgeHtml(score, par, active) {
+    if (!active) return `<span style="color:#888">${score}</span>`;
+    const diff = score - par;
+    let shape = "";
+    if (diff <= -2) shape = `<span style="border:1.5px solid #333;border-radius:50%;padding:0 3px;outline:1.5px solid #333;outline-offset:2px">${score}</span>`;
+    else if (diff === -1) shape = `<span style="border:1.5px solid #333;border-radius:50%;padding:0 3px">${score}</span>`;
+    else if (diff === 1) shape = `<span style="border:1.5px solid #333;padding:0 3px">${score}</span>`;
+    else if (diff >= 2) shape = `<span style="border:1.5px solid #333;padding:0 3px;outline:1.5px solid #333;outline-offset:2px">${score}</span>`;
+    else shape = `${score}`;
+    return shape;
+  }
+
+  // Build scorecard rows
+  let scRows = "";
+  let outTotals = [0,0,0,0], inTotals = [0,0,0,0], grandTotals = [0,0,0,0];
+  let outPar = 0, inPar = 0;
+
+  for (let hi = 0; hi < 18; hi++) {
+    const h = holes[hi];
+    const active = inPlay[hi];
+    const rowStyle = active ? "" : "opacity:0.4;background:#f5f5f5;";
+    let row = `<tr style="${rowStyle}">
+      <td style="text-align:center;font-weight:600;color:#555">${hi+1}</td>
+      <td style="text-align:center;color:#777">${h.par}</td>
+      <td style="text-align:center;color:#999;font-size:11px">${h.si}</td>`;
+    for (let pi = 0; pi < 4; pi++) {
+      const g = parseInt(results[hi].g[pi], 10);
+      const score = isNaN(g) ? "-" : g;
+      if (!isNaN(g) && active) {
+        if (hi < 9) outTotals[pi] += g; else inTotals[pi] += g;
+        grandTotals[pi] += g;
+      }
+      row += `<td style="text-align:center">${isNaN(g) ? "-" : scoreBadgeHtml(g, h.par, active)}</td>`;
+    }
+    row += `</tr>`;
+    scRows += row;
+    if (active) { if (hi < 9) outPar += h.par; else inPar += h.par; }
+
+    if (hi === 8) {
+      scRows += `<tr style="background:#e8f5e8;font-weight:700">
+        <td style="text-align:center">OUT</td>
+        <td style="text-align:center">${outPar}</td>
+        <td></td>
+        ${outTotals.map(t => `<td style="text-align:center">${t||"-"}</td>`).join("")}
+      </tr>`;
+    }
+  }
+  scRows += `<tr style="background:#e8f5e8;font-weight:700">
+    <td style="text-align:center">IN</td>
+    <td style="text-align:center">${inPar}</td>
+    <td></td>
+    ${inTotals.map(t => `<td style="text-align:center">${t||"-"}</td>`).join("")}
+  </tr>
+  <tr style="background:#0a1a0a;color:#4ade80;font-weight:700">
+    <td style="text-align:center">TOT</td>
+    <td style="text-align:center">${outPar+inPar}</td>
+    <td></td>
+    ${grandTotals.map(t => `<td style="text-align:center">${t||"-"}</td>`).join("")}
+  </tr>`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swimming With Sharks — Round Report</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; padding: 20px; color: #222; font-size: 13px; }
+  h1 { font-size: 22px; color: #0a1a0a; letter-spacing: 2px; margin: 0; }
+  h2 { font-size: 13px; color: #4a7a4a; letter-spacing: 2px; text-transform: uppercase; margin: 24px 0 8px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .header { background: #0a1a0a; color: #4ade80; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+  .header-sub { color: #4a7a4a; font-size: 11px; letter-spacing: 2px; margin-top: 4px; }
+  .meta { font-size: 13px; color: #555; margin-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  th { background: #0a1a0a; color: #4ade80; padding: 7px 6px; text-align: center; font-size: 11px; }
+  td { padding: 6px; border-bottom: 1px solid #eee; }
+  .pos { color: #16a34a; font-weight: 700; }
+  .neg { color: #dc2626; font-weight: 700; }
+  .version { font-size: 10px; color: #4a7a4a; }
+  @media print {
+    body { padding: 10px; }
+    .no-print { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>SWIMMING WITH SHARKS</h1>
+      <div class="header-sub">VEGAS · CUT THROAT · PAR 3</div>
+    </div>
+    <div class="version">vw-0.9.3</div>
+  </div>
+
+  <div class="meta">📅 ${dateStr} — ${timeOfDay}</div>
+  <div class="meta">⛳ ${courseName || "Custom Course"}</div>
+
+  <h2>Players</h2>
+  <table>
+    <tr>
+      <th>Player</th><th>Handicap</th><th>Rel HCP</th><th>Next Rel HCP</th>
+    </tr>
+    ${names.map((n,i) => `<tr>
+      <td style="font-weight:600">${n}</td>
+      <td style="text-align:center">${liveHcps[i]}</td>
+      <td style="text-align:center">${relHcps[i]}</td>
+      <td style="text-align:center;font-weight:700">${nextRelHcps[i]}</td>
+    </tr>`).join("")}
+  </table>
+
+  <h2>$$$ Summary</h2>
+  <table>
+    <tr>
+      <th></th>
+      ${names.map(n => `<th>${n}</th>`).join("")}
+    </tr>
+    ${games.vegas ? `<tr>
+      <td style="color:#555;font-size:12px">Vegas</td>
+      ${[0,1,2,3].map(i => { const v=vegasCum[i]*vegasVal; return `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`; }).join("")}
+    </tr>` : ""}
+    ${games.ct ? `<tr>
+      <td style="color:#555;font-size:12px">Cut Throat</td>
+      ${[0,1,2,3].map(i => { const v=ctCum[i]*ctVal; return `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`; }).join("")}
+    </tr>` : ""}
+    ${games.p3 ? `<tr>
+      <td style="color:#555;font-size:12px">Par 3 Banker</td>
+      ${[0,1,2,3].map(i => { const v=p3Cum[i]*p3Val; return `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`; }).join("")}
+    </tr>` : ""}
+    ${adjustments.some(a=>a!==0) ? `<tr>
+      <td style="color:#555;font-size:12px">Adjustment</td>
+      ${adjustments.map(v => `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}
+    </tr>` : ""}
+    <tr style="background:#0a1a0a;color:#4ade80">
+      <td style="font-weight:700">TOTAL</td>
+      ${dollars.map(v => `<td style="text-align:center;font-weight:700;font-size:15px" class="${v>0?"pos":v<0?"neg":""}">${v>0?"$+":"$"}${v}</td>`).join("")}
+    </tr>
+  </table>
+
+  <h2>Scorecard (Gross)</h2>
+  <table>
+    <tr>
+      <th>H</th><th>Par</th><th>SI</th>
+      ${names.map(n => `<th>${n}</th>`).join("")}
+    </tr>
+    ${scRows}
+  </table>
+
+  <p style="text-align:center;color:#aaa;font-size:10px;margin-top:24px">
+    Generated by Swimming With Sharks vw-0.9.3 · ${new Date().toLocaleString("en-SG")}
+  </p>
+  <p class="no-print" style="text-align:center;margin-top:16px">
+    <button onclick="window.print()" style="padding:10px 24px;background:#0a1a0a;color:#4ade80;border:none;border-radius:6px;font-size:14px;cursor:pointer">
+      Print / Save as PDF
+    </button>
+  </p>
+</body>
+</html>`;
+
+  const win = window.open("", "_blank");
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SETUP
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +552,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 40px" }}>
         {/* Header */}
         <div style={{ position: "relative", textAlign: "center", padding: "28px 20px 16px", background: "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
-          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "#5a8a5a", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-0.9.2</div>
+          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "#5a8a5a", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-0.9.3</div>
           <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, color: COLORS[0], letterSpacing: 4, margin: 0, lineHeight: 1 }}>
             SWIMMING WITH SHARKS
           </h1>
@@ -602,6 +788,7 @@ function Scorecard({ config, onBack, onSave }) {
   const [p3mult, setP3mult] = useState(() => saved?.p3mult || Array.from({length:18}, () => [1,1,1,1]));
   const [holeIdx, setHoleIdx] = useState(saved?.holeIdx || 0);
   const [inPlay, setInPlay] = useState(() => saved?.inPlay || Array(18).fill(false));
+  const [roundStartTime, setRoundStartTime] = useState(() => saved?.roundStartTime || null);
   const [liveHcps, setLiveHcps] = useState(() => saved?.liveHcps || [...hcps]);
   const [view, setView] = useState("hole");
   const [confirmBack, setConfirmBack] = useState(false);
@@ -1173,6 +1360,7 @@ function Scorecard({ config, onBack, onSave }) {
               };
               exportRound(roundData);
             }}
+            onReport={() => generateReport({ names, holes, liveHcps, inPlay, results, dollars, vegasCum, ctCum, p3Cum, vegasVal, ctVal, p3Val, adjustments, games, courseName: config.courseName, roundStartTime })}
             onHole={hi => { setHoleIdx(hi); setView("hole"); }} />
         ))}
       </div>
@@ -1205,7 +1393,7 @@ function Scorecard({ config, onBack, onSave }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TOTALS VIEW
 // ─────────────────────────────────────────────────────────────────────────────
-function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dollars, vegasVal, ctVal, p3Val, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, onSave, onExport, saveMsg, onHole }) {
+function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dollars, vegasVal, ctVal, p3Val, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, onSave, onExport, onReport, saveMsg, onHole }) {
   const [tab, setTab] = useState("board");
   const [showHcp, setShowHcp] = useState(false);
   const [showAdj, setShowAdj] = useState(false);
@@ -1220,13 +1408,16 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
 
   return (
     <>
-      {/* Save + Export buttons */}
+      {/* Save + Export + Report buttons */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         <button onClick={onSave} style={{ flex: 2, padding: "13px", background: "#0d2210", color: COLORS[0], border: "1px solid #2a5a2a", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>
-          💾 Save Round
+          💾 Save
         </button>
         <button onClick={onExport} style={{ flex: 1, padding: "13px", background: "transparent", color: COLORS[0], border: "1px solid #2a5a2a", borderRadius: 10, cursor: "pointer", fontSize: 14, fontFamily: "'DM Sans', sans-serif" }}>
           ↑ Export
+        </button>
+        <button onClick={onReport} style={{ flex: 1, padding: "13px", background: "transparent", color: COLORS[0], border: "1px solid #2a5a2a", borderRadius: 10, cursor: "pointer", fontSize: 14, fontFamily: "'DM Sans', sans-serif" }}>
+          📄 Report
         </button>
       </div>
       {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: COLORS[0], marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
