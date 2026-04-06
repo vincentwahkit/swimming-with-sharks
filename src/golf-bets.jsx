@@ -587,10 +587,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
 
           {/* ── Players & Handicaps ── */}
           <Sect title="Players & Handicaps">
-            {/* Reorder row */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 10 }}>
-              {[0,1,2,3].map(i => (
-                <div key={i} style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+            {[0,1,2,3].map(i => (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+                {/* Reorder arrows — left of dot */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
                   <button onClick={() => {
                     if (i === 0) return;
                     const n=[...names], h=[...hcps];
@@ -598,7 +598,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
                     [h[i], h[i-1]] = [h[i-1], h[i]];
                     setNames(n); setHcps(h);
                     try { localStorage.setItem("sws_names", JSON.stringify(n)); localStorage.setItem("sws_hcps", JSON.stringify(h)); } catch(_) {}
-                  }} style={{ flex: 1, padding: "6px 0", background: i===0?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 6, color: i===0?"#2a4a2a":COLORS[0], cursor: i===0?"default":"pointer", fontSize: 14 }}>↑</button>
+                  }} style={{ width: 28, height: 24, background: i===0?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: i===0?"#2a4a2a":COLORS[0], cursor: i===0?"default":"pointer", fontSize: 13 }}>↑</button>
                   <button onClick={() => {
                     if (i === 3) return;
                     const n=[...names], h=[...hcps];
@@ -606,12 +606,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
                     [h[i], h[i+1]] = [h[i+1], h[i]];
                     setNames(n); setHcps(h);
                     try { localStorage.setItem("sws_names", JSON.stringify(n)); localStorage.setItem("sws_hcps", JSON.stringify(h)); } catch(_) {}
-                  }} style={{ flex: 1, padding: "6px 0", background: i===3?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 6, color: i===3?"#2a4a2a":COLORS[0], cursor: i===3?"default":"pointer", fontSize: 14 }}>↓</button>
+                  }} style={{ width: 28, height: 24, background: i===3?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: i===3?"#2a4a2a":COLORS[0], cursor: i===3?"default":"pointer", fontSize: 13 }}>↓</button>
                 </div>
-              ))}
-            </div>
-            {[0,1,2,3].map(i => (
-              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
                 <div style={{ ...S.dot, background: COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, flexShrink: 0 }}>{i+1}</div>
                 <input value={names[i]} placeholder={`Player ${i+1}`}
                   style={{ ...S.inp, flex: 3, fontSize: 16, padding: "11px 14px" }}
