@@ -587,9 +587,32 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
 
           {/* ── Players & Handicaps ── */}
           <Sect title="Players & Handicaps">
+            {/* Reorder row */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 10 }}>
+              {[0,1,2,3].map(i => (
+                <div key={i} style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+                  <button onClick={() => {
+                    if (i === 0) return;
+                    const n=[...names], h=[...hcps];
+                    [n[i], n[i-1]] = [n[i-1], n[i]];
+                    [h[i], h[i-1]] = [h[i-1], h[i]];
+                    setNames(n); setHcps(h);
+                    try { localStorage.setItem("sws_names", JSON.stringify(n)); localStorage.setItem("sws_hcps", JSON.stringify(h)); } catch(_) {}
+                  }} style={{ flex: 1, padding: "6px 0", background: i===0?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 6, color: i===0?"#2a4a2a":COLORS[0], cursor: i===0?"default":"pointer", fontSize: 14 }}>↑</button>
+                  <button onClick={() => {
+                    if (i === 3) return;
+                    const n=[...names], h=[...hcps];
+                    [n[i], n[i+1]] = [n[i+1], n[i]];
+                    [h[i], h[i+1]] = [h[i+1], h[i]];
+                    setNames(n); setHcps(h);
+                    try { localStorage.setItem("sws_names", JSON.stringify(n)); localStorage.setItem("sws_hcps", JSON.stringify(h)); } catch(_) {}
+                  }} style={{ flex: 1, padding: "6px 0", background: i===3?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 6, color: i===3?"#2a4a2a":COLORS[0], cursor: i===3?"default":"pointer", fontSize: 14 }}>↓</button>
+                </div>
+              ))}
+            </div>
             {[0,1,2,3].map(i => (
-              <div key={i} style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center" }}>
-                <div style={{ ...S.dot, background: COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16 }}>{i+1}</div>
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+                <div style={{ ...S.dot, background: COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, flexShrink: 0 }}>{i+1}</div>
                 <input value={names[i]} placeholder={`Player ${i+1}`}
                   style={{ ...S.inp, flex: 3, fontSize: 16, padding: "11px 14px" }}
                   onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); try { localStorage.setItem("sws_names", JSON.stringify(n)); } catch(_){} }} />
@@ -946,7 +969,7 @@ function Scorecard({ config, onBack, onSave }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 5 }}>
-            {[["hole","HOLE"],["totals","$"],["setup","⚙"]].map(([v,label]) => (
+            {[["hole","HOLE"],["totals","$"],["setup","🏠"]].map(([v,label]) => (
               <button key={v} className="tab-btn" onClick={() => setView(v)}
                 style={{
                   padding: v==="totals" ? "8px 18px" : "6px 10px",
@@ -1029,7 +1052,7 @@ function Scorecard({ config, onBack, onSave }) {
             <div style={{ borderTop: "1px solid #1e3a1e", paddingTop: 16, marginTop: 8 }}>
               {!confirmBack ? (
                 <button style={{ ...S.startBtn, background: "#3a1a1a", color: "#f87171", border: "1px solid #5a2a2a" }}
-                  onClick={() => setConfirmBack(true)}>← Back to Setup</button>
+                  onClick={() => setConfirmBack(true)}>← Back to Home</button>
               ) : (
                 <div style={{ background: "#3a1a1a", border: "1px solid #f87171", borderRadius: 10, padding: 16 }}>
                   <div style={{ color: "#f87171", fontSize: 14, marginBottom: 12 }}>⚠️ All scores will be lost!</div>
@@ -1131,7 +1154,7 @@ function Scorecard({ config, onBack, onSave }) {
                       background: isPartner ? COLORS[pi]+"33" : "transparent",
                       transition: "all 0.15s" }}
                       onClick={() => { const others=[1,2,3].filter(x=>x!==pi); setVTeam(holeIdx,0,[0,pi]); setVTeam(holeIdx,1,others); }}>
-                      <div style={{ fontSize: 11, color: isPartner?COLORS[pi]:"#4a7a4a", marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
+                      <div style={{ fontSize: 15, fontWeight: "600", color: isPartner?COLORS[pi]:"#4a7a4a", marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
                       <div style={{ fontSize: 26, fontWeight: "700", color: isPartner?COLORS[pi]:"#3a5a3a", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>{isPartner ? "✓" : "—"}</div>
                     </button>
                   );
@@ -1943,6 +1966,10 @@ export default function App() {
 
   function loadRound(round) {
     setConfig(round.config);
+    // Remember course from resumed round
+    if (round.config.courseName) {
+      try { localStorage.setItem("sws_lastcourse", JSON.stringify({ name: round.config.courseName, tee: "", holes: round.config.holes })); } catch(_) {}
+    }
   }
 
   return config
