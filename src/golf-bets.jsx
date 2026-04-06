@@ -387,7 +387,7 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
         ${games.ct ? `<tr><td class="label">Cut Throat</td>${[0,1,2,3].map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${games.p3 ? `<tr><td class="label">Banker</td>${[0,1,2,3].map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
-        <tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"$+":"$"}${v}</td>`).join("")}</tr>
+        <tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL ($)</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>
       </table>
     </div>
   </div>
