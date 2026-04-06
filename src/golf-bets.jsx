@@ -387,7 +387,7 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
         ${games.ct ? `<tr><td class="label">Cut Throat</td>${[0,1,2,3].map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${games.p3 ? `<tr><td class="label">Banker</td>${[0,1,2,3].map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
-        <tr class="total-row"><td style="text-align:left">TOTAL</td>${dollars.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"$+":"$"}${v}</td>`).join("")}</tr>
+        <tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"$+":"$"}${v}</td>`).join("")}</tr>
       </table>
     </div>
   </div>
@@ -1427,7 +1427,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
       </div>
       {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: COLORS[0], marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CUT THROAT"],["par3","PAR 3"]].filter(([t]) => t==="board" || (t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3)).map(([t,label]) => (
+        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CUT THROAT"],["par3","BANKER"]].filter(([t]) => t==="board" || (t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3)).map(([t,label]) => (
           <button key={t} className="tab-btn" onClick={() => setTab(t)}
             style={{ padding: "8px 12px", borderRadius: 6, fontSize: 11, letterSpacing: 1, cursor: "pointer",
               border: `1px solid ${tab===t?COLORS[0]:"#1e3a1e"}`,
