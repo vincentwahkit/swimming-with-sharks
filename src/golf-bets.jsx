@@ -288,7 +288,7 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
     }
     row += `</tr>`;
     scRows += row;
-    if (active) { if (hi < 9) outPar += h.par; else inPar += h.par; }
+    if (hi < 9) outPar += h.par; else inPar += h.par;
 
     if (hi === 8) {
       scRows += `<tr style="background:#e8f5e8;font-weight:700">
@@ -319,21 +319,28 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swimming With Sharks — Round Report</title>
 <style>
-  body { font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; padding: 20px; color: #222; font-size: 13px; }
-  h1 { font-size: 22px; color: #0a1a0a; letter-spacing: 2px; margin: 0; }
-  h2 { font-size: 13px; color: #4a7a4a; letter-spacing: 2px; text-transform: uppercase; margin: 24px 0 8px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
-  .header { background: #0a1a0a; color: #4ade80; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-  .header-sub { color: #4a7a4a; font-size: 11px; letter-spacing: 2px; margin-top: 4px; }
-  .meta { font-size: 13px; color: #555; margin-bottom: 4px; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-  th { background: #0a1a0a; color: #4ade80; padding: 7px 6px; text-align: center; font-size: 11px; }
-  td { padding: 6px; border-bottom: 1px solid #eee; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 12px 16px; color: #222; font-size: 11px; }
+  .header { background: #0a1a0a; color: #4ade80; padding: 10px 14px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { font-size: 18px; letter-spacing: 3px; color: #4ade80; }
+  .header-sub { color: #4a7a4a; font-size: 9px; letter-spacing: 2px; margin-top: 2px; }
+  .header-right { text-align: right; font-size: 9px; color: #4a7a4a; }
+  .meta-row { display: flex; gap: 20px; margin-bottom: 8px; font-size: 11px; color: #444; }
+  h2 { font-size: 9px; color: #4a7a4a; letter-spacing: 2px; text-transform: uppercase; margin: 8px 0 4px; border-bottom: 1px solid #ddd; padding-bottom: 2px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #0a1a0a; color: #4ade80; padding: 4px 5px; text-align: center; font-size: 10px; }
+  td { padding: 3px 5px; border-bottom: 1px solid #eee; text-align: center; font-size: 11px; }
+  td.label { text-align: left; color: #555; }
   .pos { color: #16a34a; font-weight: 700; }
   .neg { color: #dc2626; font-weight: 700; }
-  .version { font-size: 10px; color: #4a7a4a; }
+  .total-row td { background: #0a1a0a; color: #4ade80; font-weight: 700; font-size: 12px; }
+  .out-row td, .in-row td { background: #e8f5e8; font-weight: 700; font-size: 11px; }
+  .footer { text-align: center; color: #bbb; font-size: 9px; margin-top: 8px; border-top: 1px solid #eee; padding-top: 6px; }
   @media print {
-    body { padding: 10px; }
+    body { padding: 8px; }
     .no-print { display: none; }
+    @page { margin: 10mm; size: A4; }
   }
 </style>
 </head>
@@ -343,68 +350,54 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
       <h1>SWIMMING WITH SHARKS</h1>
       <div class="header-sub">VEGAS · CUT THROAT · PAR 3</div>
     </div>
-    <div class="version">vw-0.9.3</div>
+    <div class="header-right">
+      <div>${dateStr}</div>
+      <div>${timeOfDay} · ${courseName || "Custom Course"}</div>
+      <div style="margin-top:2px">vw-0.9.3</div>
+    </div>
   </div>
 
-  <div class="meta">📅 ${dateStr} — ${timeOfDay}</div>
-  <div class="meta">⛳ ${courseName || "Custom Course"}</div>
-
-  <h2>Players</h2>
-  <table>
-    <tr>
-      <th>Player</th><th>Handicap</th><th>Rel HCP</th><th>Next Rel HCP</th>
-    </tr>
-    ${names.map((n,i) => `<tr>
-      <td style="font-weight:600">${n}</td>
-      <td style="text-align:center">${liveHcps[i]}</td>
-      <td style="text-align:center">${relHcps[i]}</td>
-      <td style="text-align:center;font-weight:700">${nextRelHcps[i]}</td>
-    </tr>`).join("")}
-  </table>
-
-  <h2>$$$ Summary</h2>
-  <table>
-    <tr>
-      <th></th>
-      ${names.map(n => `<th>${n}</th>`).join("")}
-    </tr>
-    ${games.vegas ? `<tr>
-      <td style="color:#555;font-size:12px">Vegas</td>
-      ${[0,1,2,3].map(i => { const v=vegasCum[i]*vegasVal; return `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`; }).join("")}
-    </tr>` : ""}
-    ${games.ct ? `<tr>
-      <td style="color:#555;font-size:12px">Cut Throat</td>
-      ${[0,1,2,3].map(i => { const v=ctCum[i]*ctVal; return `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`; }).join("")}
-    </tr>` : ""}
-    ${games.p3 ? `<tr>
-      <td style="color:#555;font-size:12px">Par 3 Banker</td>
-      ${[0,1,2,3].map(i => { const v=p3Cum[i]*p3Val; return `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`; }).join("")}
-    </tr>` : ""}
-    ${adjustments.some(a=>a!==0) ? `<tr>
-      <td style="color:#555;font-size:12px">Adjustment</td>
-      ${adjustments.map(v => `<td style="text-align:center" class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}
-    </tr>` : ""}
-    <tr style="background:#0a1a0a;color:#4ade80">
-      <td style="font-weight:700">TOTAL</td>
-      ${dollars.map(v => `<td style="text-align:center;font-weight:700;font-size:15px" class="${v>0?"pos":v<0?"neg":""}">${v>0?"$+":"$"}${v}</td>`).join("")}
-    </tr>
-  </table>
+  <div class="two-col">
+    <div>
+      <h2>Players</h2>
+      <table>
+        <tr><th style="text-align:left">Player</th><th>HCP</th><th>Rel</th><th>Next Rel</th></tr>
+        ${names.map((n,i) => `<tr>
+          <td style="text-align:left;font-weight:600">${n}</td>
+          <td>${liveHcps[i]}</td>
+          <td>${relHcps[i]}</td>
+          <td style="font-weight:700">${nextRelHcps[i]}</td>
+        </tr>`).join("")}
+      </table>
+    </div>
+    <div>
+      <h2>$$$ Summary</h2>
+      <table>
+        <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n}</th>`).join("")}</tr>
+        ${games.vegas ? `<tr><td class="label">Vegas</td>${[0,1,2,3].map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${games.ct ? `<tr><td class="label">Cut Throat</td>${[0,1,2,3].map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${games.p3 ? `<tr><td class="label">Par 3</td>${[0,1,2,3].map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
+        <tr class="total-row"><td style="text-align:left">TOTAL</td>${dollars.map(v=>`<td>${v>0?"$+":"$"}${v}</td>`).join("")}</tr>
+      </table>
+    </div>
+  </div>
 
   <h2>Scorecard (Gross)</h2>
   <table>
     <tr>
       <th>H</th><th>Par</th><th>SI</th>
-      ${names.map(n => `<th>${n}</th>`).join("")}
+      ${names.map(n=>`<th>${n}</th>`).join("")}
     </tr>
     ${scRows}
   </table>
 
-  <p style="text-align:center;color:#aaa;font-size:10px;margin-top:24px">
+  <div class="footer">
     Generated by Swimming With Sharks vw-0.9.3 · ${new Date().toLocaleString("en-SG")}
-  </p>
-  <p class="no-print" style="text-align:center;margin-top:16px">
-    <button onclick="window.print()" style="padding:10px 24px;background:#0a1a0a;color:#4ade80;border:none;border-radius:6px;font-size:14px;cursor:pointer">
-      Print / Save as PDF
+  </div>
+  <p class="no-print" style="text-align:center;margin-top:10px">
+    <button onclick="window.print()" style="padding:8px 20px;background:#0a1a0a;color:#4ade80;border:none;border-radius:6px;font-size:13px;cursor:pointer">
+      🖨 Print / Save as PDF
     </button>
   </p>
 </body>
