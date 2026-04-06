@@ -382,9 +382,9 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
         <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n.slice(0,Math.max(2,n.length))}</th>`).join("")}</tr>
         ${games.vegas ? `<tr><td class="label">Vegas</td>${[0,1,2,3].map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${games.ct ? `<tr><td class="label">Cut Throat</td>${[0,1,2,3].map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
-        ${games.p3 ? `<tr><td class="label">Par 3</td>${[0,1,2,3].map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${games.p3 ? `<tr><td class="label">Banker</td>${[0,1,2,3].map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
-        <tr class="total-row"><td style="text-align:left">TOTAL</td>${dollars.map(v=>`<td>${v>0?"$+":"$"}${v}</td>`).join("")}</tr>
+        <tr class="total-row"><td style="text-align:left">TOTAL</td>${dollars.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"$+":"$"}${v}</td>`).join("")}</tr>
       </table>
     </div>
   </div>
@@ -668,7 +668,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
           <CollapseSect title="Games & Stakes" open={activeSection==="games"} onToggle={() => setActiveSection(s => s==="games" ? null : "games")}>
             {/* Game toggles */}
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              {[["vegas","Vegas"],["ct","Cut Throat"],["p3","Par 3 Banker"]].map(([key,label]) => {
+              {[["vegas","Vegas"],["ct","Cut Throat"],["p3","Banker"]].map(([key,label]) => {
                 const on = games[key];
                 return (
                   <button key={key} onClick={() => setGames(g => ({ ...g, [key]: !g[key] }))}
@@ -683,7 +683,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound }) {
               })}
             </div>
             {/* $ per point */}
-            {[["Vegas","vegas",vegasVal,setVegasVal],["Cut Throat","ct",ctVal,setCtVal],["Par 3 Banker","p3",p3Val,setP3Val]].map(([label,key,val,setter]) => (
+            {[["Vegas","vegas",vegasVal,setVegasVal],["Cut Throat","ct",ctVal,setCtVal],["Banker","p3",p3Val,setP3Val]].map(([label,key,val,setter]) => (
               <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, opacity: games[key]?1:0.35, pointerEvents: games[key]?"auto":"none" }}>
                 <span style={{ fontSize: 14, color: "#ccc", fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
                 <div style={{ display: "flex", alignItems: "center", background: "#071507", border: "1px solid #1e3a1e", borderRadius: 10, overflow: "hidden" }}>
@@ -1254,9 +1254,9 @@ function Scorecard({ config, onBack, onSave }) {
 
             }
 
-            {/* Par 3 Banker */}
+            {/* Banker */}
             {games.p3 && h.par === 3 && (
-              <Sect title="Par 3 Banker">
+              <Sect title="Banker">
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 12, color: "#4a7a4a", marginBottom: 8 }}>Banker</div>
                   <div style={{ display: "flex", gap: 6 }}>
@@ -1323,7 +1323,7 @@ function Scorecard({ config, onBack, onSave }) {
                 {/* Par 3 row — only on par 3s */}
                 {games.p3 && h.par === 3 && (
                   <div style={{ display: "grid", gridTemplateColumns: `100px repeat(4, 1fr)` }}>
-                    <div style={{ padding: "8px 10px", fontSize: 12, color: "#5a8a5a", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Par 3</div>
+                    <div style={{ padding: "8px 10px", fontSize: 12, color: "#5a8a5a", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Banker</div>
                     {[0,1,2,3].map(pi => {
                       const v = res.p3[pi];
                       return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, fontWeight: "600", color: v>0?COLORS[0]:v<0?"#f87171":"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v}</div>;
@@ -1446,7 +1446,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
                 <div style={{ padding: "8px 10px", fontSize: 11, color: "#3a6a3a" }} />
                 {[0,1,2,3].map(i => <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 12, color: COLORS[i], fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>{names[i]}</div>)}
               </div>
-              {[["Vegas","vegas",vegasCum,vegasVal],["Cut Throat","ct",ctCum,ctVal],["Par 3","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
+              {[["Vegas","vegas",vegasCum,vegasVal],["Cut Throat","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
                 <div key={label} style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", borderBottom: "1px solid #0d2210" }}>
                   <div style={{ padding: "8px 10px", fontSize: 11, color: "#5a8a5a", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
                   {[0,1,2,3].map(i => {
@@ -1627,7 +1627,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
       )}
 
       {tab === "par3" && (
-        <Sect title="Par 3 Banker — Hole by Hole">
+        <Sect title="Banker — Hole by Hole">
           <div style={{ background: "#071507", borderRadius: 8, border: "1px solid #1e3a1e", overflow: "hidden" }}>
             <div style={{ display: "grid", gridTemplateColumns: "28px repeat(4,1fr)", borderBottom: "1px solid #1e3a1e" }}>
               {["H",...names.map(n=>n.slice(0,3))].map((h,i) => (
