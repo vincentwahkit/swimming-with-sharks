@@ -9,6 +9,9 @@ const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea"];
 const VEGAS_VAL = 1;
 const CT_VAL = 3;
 const P3_VAL = 5;
+const DEFAULT_MATCHUP = [
+  { type: "nassau", p1: 0, p2: 1, strokesFront: 0, strokesBack: 0, stake: 5, pressMode: "off", units: [1, 1, 2] },
+];
 // Laguna National Classic Course, Singapore — Black tees, Par 72
 const LAGUNA_CLASSIC_HOLES = [
   {par:4,si:12},{par:4,si:4},{par:5,si:2},{par:3,si:16},
@@ -182,8 +185,287 @@ function computePar3(nett, banker, mults) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// NASSAU COMPUTATION
+// ─────────────────────────────────────────────────────────────────────────────
+// Build stroke sets for each 9 based on SI ranking within that 9.
+// strokes > 0: p2 receives on the N lowest-SI holes of that 9.
+// strokes < 0: p1 receives on the N lowest-SI holes of that 9.
+// strokes = 0: nobody receives.
+function nassauStrokeSIs(strokes, siList) {
+  if (strokes === 0) return { p1: new Set(), p2: new Set() };
+  const n = Math.abs(strokes);
+  const sorted = [...siList].sort((a, b) => a - b);
+  const set = new Set(sorted.slice(0, n));
+  return strokes > 0
+    ? { p1: new Set(), p2: set }
+    : { p1: set, p2: new Set() };
+}
+
+// Build front/back stroke SI sets for a matchup given the full holes array
+function buildNassauStrokeMaps(matchup, holes) {
+  const frontSIs = holes.slice(0, 9).map(h => h.si);
+  const backSIs  = holes.slice(9, 18).map(h => h.si);
+  return {
+    front: nassauStrokeSIs(matchup.strokesFront, frontSIs),
+    back:  nassauStrokeSIs(matchup.strokesBack,  backSIs),
+  };
+}
+
+// Returns { p1: 0|1, p2: 0|1 } strokes for a specific hole
+function strokesForHole(hi, si, strokeMaps) {
+  const map = hi < 9 ? strokeMaps.front : strokeMaps.back;
+  return {
+    p1: map.p1.has(si) ? 1 : 0,
+    p2: map.p2.has(si) ? 1 : 0,
+  };
+}
+
+function computeNassau(matchup, gross, holes, inPlay) {
+  const { p1, p2 } = matchup;
+  const strokeMaps = buildNassauStrokeMaps(matchup, holes);
+
+  const holeWL = Array(18).fill(0);
+  for (let hi = 0; hi < 18; hi++) {
+    if (!inPlay[hi]) continue;
+    const g1 = parseInt(gross[hi][p1], 10);
+    const g2 = parseInt(gross[hi][p2], 10);
+    if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
+    const { si, par } = holes[hi];
+    const strk = strokesForHole(hi, si, strokeMaps);
+    const cap = par === 3 ? par + 3 : par + 4;
+    const n1 = Math.min(g1 - strk.p1, cap);
+    const n2 = Math.min(g2 - strk.p2, cap);
+    if (n1 < n2) holeWL[hi] = 1;
+    else if (n2 < n1) holeWL[hi] = -1;
+  }
+
+  function segmentStatus(startHi, endHi) {
+    let status = 0, holesPlayed = 0;
+    for (let hi = startHi; hi <= endHi; hi++) {
+      if (!inPlay[hi]) continue;
+      const g1 = parseInt(gross[hi][p1], 10);
+      const g2 = parseInt(gross[hi][p2], 10);
+      if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
+      status += holeWL[hi];
+      holesPlayed++;
+    }
+    return { status, holesPlayed };
+  }
+
+  const front = segmentStatus(0, 8);
+  const back = segmentStatus(9, 17);
+  const overall = segmentStatus(0, 17);
+
+  const presses = [];
+  if (matchup.pressMode !== "off") {
+    let pressStart = null, pressStatus = 0, runningStatus = 0;
+    for (let hi = 0; hi < 18; hi++) {
+      if (!inPlay[hi]) continue;
+      const g1 = parseInt(gross[hi][p1], 10);
+      const g2 = parseInt(gross[hi][p2], 10);
+      if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
+      runningStatus += holeWL[hi];
+      if (matchup.pressMode === "auto" && pressStart === null && runningStatus === -2) {
+        pressStart = hi + 1; pressStatus = 0;
+      } else if (pressStart !== null) {
+        pressStatus += holeWL[hi];
+      }
+    }
+    if (pressStart !== null) presses.push({ startHole: pressStart + 1, status: pressStatus });
+  }
+
+  return { front, back, overall, presses, holeWL, strokeMaps };
+}
+
+function nassauDollars(matchup, front, back, overall, presses) {
+  const { stake, units = [1, 1, 2] } = matchup;
+  const frontDollars   = front.status   === 0 || units[0] === 0 ? 0 : front.status   > 0 ?  stake * units[0] : -stake * units[0];
+  const backDollars    = back.status    === 0 || units[1] === 0 ? 0 : back.status    > 0 ?  stake * units[1] : -stake * units[1];
+  const overallDollars = overall.status === 0 || units[2] === 0 ? 0 : overall.status > 0 ?  stake * units[2] : -stake * units[2];
+  const pressDollars   = presses.reduce((sum, p) => sum + (p.status === 0 ? 0 : p.status > 0 ? stake : -stake), 0);
+  const net = frontDollars + backDollars + overallDollars + pressDollars;
+  return { frontDollars, backDollars, overallDollars, pressDollars, net };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GDB COMPUTATION — Game/Dormie/Bye per 9 holes
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute GDB for one 9-hole segment (startHi = 0 for front, 9 for back)
+function computeGDB9(matchup, gross, holes, inPlay, startHi) {
+  const { p1, p2 } = matchup;
+  const strokeMaps = buildNassauStrokeMaps(matchup, holes);
+  const endHi = startHi + 8;
+
+  // Per-hole W/L for this 9
+  const holeWL = [];
+  for (let hi = startHi; hi <= endHi; hi++) {
+    if (!inPlay[hi]) { holeWL.push(0); continue; }
+    const g1 = parseInt(gross[hi][p1], 10);
+    const g2 = parseInt(gross[hi][p2], 10);
+    if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) { holeWL.push(0); continue; }
+    const { si, par } = holes[hi];
+    const strk = strokesForHole(hi, si, strokeMaps);
+    const cap = par === 3 ? par + 3 : par + 4;
+    const n1 = Math.min(g1 - strk.p1, cap);
+    const n2 = Math.min(g2 - strk.p2, cap);
+    holeWL.push(n1 < n2 ? 1 : n2 < n1 ? -1 : 0);
+  }
+
+  // Count played holes
+  const playedIdx = []; // relative indices (0-8) of played holes
+  for (let i = 0; i < 9; i++) {
+    if (inPlay[startHi + i]) {
+      const g1 = parseInt(gross[startHi + i][p1], 10);
+      const g2 = parseInt(gross[startHi + i][p2], 10);
+      if (!isNaN(g1) && !isNaN(g2) && g1 > 0 && g2 > 0) playedIdx.push(i);
+    }
+  }
+  const holesPlayed = playedIdx.length;
+
+  // Game: running cumulative status through 9
+  let gameStatus = 0;
+  const gameByHole = []; // cumulative status after each played hole
+  for (let i = 0; i < holesPlayed; i++) {
+    gameStatus += holeWL[playedIdx[i]];
+    gameByHole.push(gameStatus);
+  }
+
+  // Detect Dormie: status = remaining holes in the 9 (can't lose)
+  // e.g. 4 UP with 4 holes left = dormie
+  let dormieStartIdx = null;
+  for (let i = 0; i < holesPlayed; i++) {
+    const remaining = 9 - (i + 1); // holes left in 9 after the (i+1)th played hole
+    const status = gameByHole[i];
+    if (Math.abs(status) === remaining && remaining > 0) {
+      dormieStartIdx = i + 1;
+      break;
+    }
+  }
+
+  // Detect Buy: game decided early (lead > holes remaining = can't be caught)
+  let buyStartIdx = null;
+  for (let i = 0; i < holesPlayed; i++) {
+    const remaining = 9 - (i + 1);
+    const status = Math.abs(gameByHole[i]);
+    if (status > remaining) {
+      buyStartIdx = i + 1;
+      break;
+    }
+  }
+
+  // Game result (full 9)
+  const game = { status: gameStatus, holesPlayed };
+
+  // Dormie bet result (holes after dormie triggered)
+  let dormie = null;
+  if (dormieStartIdx !== null && dormieStartIdx < holesPlayed) {
+    let ds = 0;
+    for (let i = dormieStartIdx; i < holesPlayed; i++) ds += holeWL[playedIdx[i]];
+    dormie = {
+      status: ds,
+      holesPlayed: holesPlayed - dormieStartIdx,
+      startHole: startHi + playedIdx[dormieStartIdx] + 1, // 1-based hole number
+    };
+  }
+
+  // Buy bet result (holes after game decided)
+  let buy = null;
+  if (buyStartIdx !== null && buyStartIdx < holesPlayed) {
+    let bs = 0;
+    for (let i = buyStartIdx; i < holesPlayed; i++) bs += holeWL[playedIdx[i]];
+    buy = {
+      status: bs,
+      holesPlayed: holesPlayed - buyStartIdx,
+      startHole: startHi + playedIdx[buyStartIdx] + 1,
+    };
+  }
+
+  return { game, dormie, buy, holeWL, holesPlayed, gameByHole, playedIdx, startHi };
+}
+
+function computeGDB(matchup, gross, holes, inPlay) {
+  const front = computeGDB9(matchup, gross, holes, inPlay, 0);
+  const back   = computeGDB9(matchup, gross, holes, inPlay, 9);
+  const strokeMaps = buildNassauStrokeMaps(matchup, holes);
+  return { front, back, strokeMaps };
+}
+
+function gdbDollars(matchup, front, back) {
+  const { stake } = matchup;
+  const settle9 = (seg) => {
+    if (!seg) return 0;
+    const gameDollars   = seg.game.status   === 0 ? 0 : seg.game.status   > 0 ? stake * 3 : -stake * 3;
+    const dormieDollars = !seg.dormie || seg.dormie.status === 0 ? 0 : seg.dormie.status > 0 ? stake : -stake;
+    const buyDollars    = !seg.buy    || seg.buy.status    === 0 ? 0 : seg.buy.status    > 0 ? stake : -stake;
+    return { gameDollars, dormieDollars, buyDollars, net: gameDollars + dormieDollars + buyDollars };
+  };
+  const f = settle9(front);
+  const b = settle9(back);
+  return {
+    front: f, back: b,
+    net: f.net + b.net,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
+function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTeams, dollars, nassauMatchups: matchups, nassauResults, nassauEnabled: matchupEnabled, courseName }) {
+  // Encode inPlay as bitmask
+  const ipMask = inPlay.reduce((acc, v, i) => acc + (v ? (1 << i) : 0), 0);
+
+  // Flatten holes [par,si,...] and scores [18×4]
+  const ho = holes.flatMap(h => [h.par, h.si]);
+  const sc = scores.map(row => row.map(g => parseInt(g,10)||0));
+  const sf = sc.flat();
+
+  // Vegas teams — only store deviations from default [[0,1],[2,3]]
+  const defaultT = [[0,1],[2,3]];
+  const vtDev = vTeams.map((t,hi) =>
+    (t[0][0]===0&&t[0][1]===1&&t[1][0]===2&&t[1][1]===3) ? null : [t[0],t[1]]
+  );
+  const vt = vtDev.every(v=>v===null) ? [] : vtDev;
+
+  // Nassau summary
+  const nassau = matchupEnabled ? (matchups||[]).map((m,mi) => {
+    const r = (nassauResults||[])?.[mi];
+    return { p1:m.p1, p2:m.p2, net:r?.dollars?.net??0 };
+  }) : [];
+
+  const payload = {
+    v:"1",
+    c: (courseName||"Custom").slice(0,30),
+    d: new Date().toISOString().slice(0,10).replace(/-/g,""),
+    p: names.map(n=>n.slice(0,8)),
+    h: hcps,
+    ho, sf,
+    ip: ipMask,
+    vt,
+    g: { v:games.vegas?1:0, ct:games.ct?1:0, p3:games.p3?1:0, n:matchupEnabled?1:0 },
+    st: { v:stakes.vegasVal||1, ct:stakes.ctVal||3, p3:stakes.p3Val||5 },
+    dl: dollars,
+    fn: "F", // firstNine default — overrideable per cross-flight matchup
+    nassau,
+  };
+
+  return JSON.stringify(payload);
+}
+
+// Decode QR payload back to usable data
+function decodeQRPayload(str) {
+  try {
+    const d = JSON.parse(str);
+    if (d.v !== "1") return null;
+    const holes = [];
+    for (let i = 0; i < 36; i+=2) holes.push({ par: d.ho[i], si: d.ho[i+1] });
+    const scores = [];
+    for (let h = 0; h < 18; h++) scores.push(d.sf.slice(h*4, h*4+4));
+    const inPlay = Array.from({length:18}, (_,i) => !!(d.ip & (1<<i)));
+    return { courseName:d.c, date:d.d, names:d.p, hcps:d.h, holes, scores, inPlay,
+             games:d.g, stakes:d.st, dollars:d.dl, nassau:d.nassau||[], firstNine:d.fn };
+  } catch { return null; }
+}
+
 function makeFilename(names) {
   const now = new Date();
   const date = now.toISOString().slice(0,10).replace(/-/g,"");
@@ -226,15 +508,16 @@ function haptic(style = "light") {
   } catch(_) {}
 }
 
-function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vegasCum, ctCum, p3Cum, vegasVal, ctVal, p3Val, adjustments, games, courseName, roundStartTime }) {
+function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, vegasVal, ctVal, p3Val, adjustments, games, matchupEnabled, nassauResults, matchups, courseName, roundStartTime, qrPayload }) {
   // Relative HCPs
   const minHcp = Math.min(...liveHcps);
   const relHcps = liveHcps.map(h => h - minHcp);
 
-  // Next round HCP adjustment
+  // Next round HCP adjustment — based on Vegas/CT/Banker subtotal only
+  const hcpBase = dollarsSubtotal || dollars;
   const strokeAdj = [0,1,2,3].map(i => {
-    const strokes = Math.floor(Math.abs(dollars[i]) / 25);
-    return dollars[i] > 0 ? -strokes : dollars[i] < 0 ? strokes : 0;
+    const strokes = Math.floor(Math.abs(hcpBase[i]) / 25);
+    return hcpBase[i] > 0 ? -strokes : hcpBase[i] < 0 ? strokes : 0;
   });
   const adjHcps = [0,1,2,3].map(i => liveHcps[i] + strokeAdj[i]);
   const minAdj = Math.min(...adjHcps);
@@ -357,7 +640,7 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
     <div class="header-right" style="color:#e8f5e8">
       <div>${dateStr}</div>
       <div>${timeOfDay} · ${courseName || "Custom Course"}</div>
-      <div style="margin-top:2px;color:#4a7a4a">vw-0.9.5</div>
+      <div style="margin-top:2px;color:#4a7a4a">vw-1.0.0</div>
     </div>
   </div>
 
@@ -381,7 +664,12 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
         ${games.ct ? `<tr><td class="label">Cut Throat</td>${[0,1,2,3].map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${games.p3 ? `<tr><td class="label">Banker</td>${[0,1,2,3].map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
         ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
-        <tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL ($)</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>
+        ${matchupEnabled
+          ? `<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${games.vegas||games.ct||games.p3?"Subtotal":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>
+             <tr><td class="label">Nassau</td>${(()=>{const nd=[0,0,0,0];(matchupResults||[]).forEach((r,mi)=>{const m=matchups[mi];nd[m.p1]+=r.dollars.net;nd[m.p2]-=r.dollars.net;});return nd.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("");})()}</tr>
+             <tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL ($)</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>`
+          : `<tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL ($)</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>`
+        }
       </table>
     </div>
   </div>
@@ -396,7 +684,12 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
   </table>
 
   <div class="footer">
-    Generated by Swimming With Sharks vw-0.9.5 · ${new Date().toLocaleString("en-SG")}
+    Generated by Swimming With Sharks vw-1.0.0 · ${new Date().toLocaleString("en-SG")}
+  </div>
+  <div style="text-align:center;margin:10px 0;page-break-inside:avoid">
+    <h2 style="font-size:9px;color:#4a7a4a;letter-spacing:2px;text-transform:uppercase;margin:8px 0 6px;border-bottom:1px solid #ddd;padding-bottom:2px">QR Code — Full Round Data</h2>
+    <div id="qr-report" style="display:inline-block;background:#fff;padding:6px;border:1px solid #eee;border-radius:4px"></div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px">${names.join(" · ")}</div>
   </div>
   <div class="no-print" style="text-align:center;margin-top:10px;display:flex;gap:10px;justify-content:center">
     <button onclick="window.print()" style="padding:8px 20px;background:#0a1a0a;color:#4ade80;border:none;border-radius:6px;font-size:13px;cursor:pointer">
@@ -405,7 +698,17 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, vega
     <button onclick="window.close()" style="padding:8px 20px;background:#1e3a1e;color:#4ade80;border:1px solid #2a5a2a;border-radius:6px;font-size:13px;cursor:pointer">
       ← Back
     </button>
-  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script>
+    if(window.QRCode){
+      new QRCode(document.getElementById("qr-report"),{
+        text:${JSON.stringify(qrPayload||"")},
+        width:160,height:160,
+        colorDark:"#000000",colorLight:"#ffffff",
+        correctLevel:QRCode.CorrectLevel.M
+      });
+    }
+  </script>
 </body>
 </html>`;
 
@@ -457,6 +760,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
     return PRESET_COURSES[0];
   });
   const [games, setGames] = useState({ vegas: true, ct: true, p3: true });
+  const [matchupBets, setMatchupBets] = useState({ on: false, matchups: DEFAULT_MATCHUP.map(m => ({ ...m })) });
   const [importPreview, setImportPreview] = useState(null);
   const [activeSection, setActiveSection] = useState(null); // "course" | "games" | "history"
   const importRef = React.useRef();
@@ -574,7 +878,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 40px" }}>
         {/* Header */}
         <div style={{ position: "relative", textAlign: "center", padding: "28px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
-          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-0.9.5</div>
+          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.0.0</div>
           <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, color: "var(--accent)", letterSpacing: 4, margin: 0, lineHeight: 1 }}>
             SWIMMING WITH SHARKS
           </h1>
@@ -705,23 +1009,27 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
 
           {/* ── Games & Stakes — collapsible ── */}
           <CollapseSect title="Games & Stakes" open={activeSection==="games"} onToggle={() => setActiveSection(s => s==="games" ? null : "games")}>
-            {/* Game toggles */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              {[["vegas","Vegas"],["ct","Cut Throat"],["p3","Banker"]].map(([key,label]) => {
-                const on = games[key];
+            {/* Game toggles — 4 buttons including Nassau */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+              {[["vegas","Vegas"],["ct","Cut Throat"],["p3","Banker"],["nassau","Matchup"]].map(([key,label]) => {
+                const on = key === "nassau" ? matchupBets.on : games[key];
                 return (
-                  <button key={key} onClick={() => setGames(g => ({ ...g, [key]: !g[key] }))}
-                    style={{ flex: 1, padding: "11px 4px", borderRadius: 8, cursor: "pointer", fontSize: 15, fontWeight: "700",
+                  <button key={key}
+                    onClick={() => key === "nassau"
+                      ? setMatchupBets(n => ({ ...n, on: !n.on }))
+                      : setGames(g => ({ ...g, [key]: !g[key] }))}
+                    style={{ flex: 1, minWidth: "calc(50% - 4px)", padding: "11px 4px", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: "700",
                       border: `1px solid ${on?"var(--accent)":"var(--border)"}`,
                       background: on?"var(--accent)":"transparent",
-                      color: on?"#ffffff":"var(--muted)",
+                      color: on?"#000":"var(--muted)",
                       fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s" }}>
                     {on?"✓ ":""}{label}
                   </button>
                 );
               })}
             </div>
-            {/* $ per point */}
+
+            {/* $ per point — Vegas / CT / Banker */}
             {[["Vegas","vegas",vegasVal,setVegasVal],["Cut Throat","ct",ctVal,setCtVal],["Banker","p3",p3Val,setP3Val]].map(([label,key,val,setter]) => (
               <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, opacity: games[key]?1:0.35, pointerEvents: games[key]?"auto":"none" }}>
                 <span style={{ fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
@@ -732,7 +1040,154 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                 </div>
               </div>
             ))}
-            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, marginTop: 2 }}>
+
+            {/* Nassau matchups */}
+            {matchupBets.on && (
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
+                <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 2, marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>MATCHUP MATCHUPS</div>
+                {matchupBets.matchups.map((m, mi) => (
+                  <div key={mi} style={{ background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+                    {/* Match header + remove button */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <span style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif" }}>MATCH {mi + 1}</span>
+                      {matchupBets.matchups.length > 1 && (
+                        <button onClick={() => setMatchupBets(n => ({ ...n, matchups: n.matchups.filter((_,i) => i !== mi) }))}
+                          style={{ background: "transparent", border: "1px solid var(--neg)", borderRadius: 6, color: "var(--neg)", cursor: "pointer", fontSize: 12, padding: "3px 10px", fontFamily: "'DM Sans', sans-serif" }}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    {/* Type toggle — Nassau or GDB */}
+                    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                      {[["nassau","Nassau"],["gdb","GDB"]].map(([val,label]) => (
+                        <button key={val} onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].type=val; return { ...n, matchups: ms }; })}
+                          style={{ flex: 1, padding: "8px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: "700",
+                            border: `1px solid ${(m.type||"nassau")===val?"var(--accent)":"var(--border)"}`,
+                            background: (m.type||"nassau")===val?"var(--accent)":"transparent",
+                            color: (m.type||"nassau")===val?"#000":"var(--muted)",
+                            fontFamily: "'DM Sans', sans-serif" }}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Player pair */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <select value={m.p1} style={{ ...S.sel, flex: 1 }}
+                        onChange={e => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].p1=Number(e.target.value); return { ...n, matchups: ms }; })}>
+                        {[0,1,2,3].map(i => <option key={i} value={i}>{names[i]||`P${i+1}`}</option>)}
+                      </select>
+                      <span style={{ color: "var(--dim)", fontSize: 14, fontFamily: "'DM Sans', sans-serif", flexShrink: 0 }}>vs</span>
+                      <select value={m.p2} style={{ ...S.sel, flex: 1 }}
+                        onChange={e => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].p2=Number(e.target.value); return { ...n, matchups: ms }; })}>
+                        {[0,1,2,3].map(i => <option key={i} value={i}>{names[i]||`P${i+1}`}</option>)}
+                      </select>
+                    </div>
+                    {/* Strokes — front and back */}
+                    {(() => {
+                      const giverF = m.strokesFront >= 0 ? m.p1 : m.p2;
+                      const receiverF = m.strokesFront >= 0 ? m.p2 : m.p1;
+                      const giverB = m.strokesBack >= 0 ? m.p1 : m.p2;
+                      const receiverB = m.strokesBack >= 0 ? m.p2 : m.p1;
+                      return (
+                        <div style={{ marginBottom: 10 }}>
+                          {[["FRONT","strokesFront",giverF,receiverF],["BACK","strokesBack",giverB,receiverB]].map(([label, field, giver, receiver]) => (
+                            <div key={field} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                              <div>
+                                <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: 1, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+                                <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
+                                  {m[field] === 0
+                                    ? "Scratch"
+                                    : <><span style={{ color: isLight?COLORS_LIGHT[giver]:COLORS[giver], fontWeight:"600" }}>{names[giver]||`P${giver+1}`}</span> gives <span style={{ color: isLight?COLORS_LIGHT[receiver]:COLORS[receiver], fontWeight:"600" }}>{names[receiver]||`P${receiver+1}`}</span> {Math.abs(m[field])} stroke{Math.abs(m[field])!==1?"s":""}</>
+                                  }
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                                <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi][field]-=1; return { ...n, matchups: ms }; })} style={S.pmBtnInline}>−</button>
+                                <span style={{ width: 30, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700" }}>{Math.abs(m[field])}</span>
+                                <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi][field]+=1; return { ...n, matchups: ms }; })} style={S.pmBtnInline}>+</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {/* Stake */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                      <div>
+                        <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Stake</span>
+                        <div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>F=1× B=1× Overall=2×</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                        <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].stake=Math.max(1,ms[mi].stake-1); return { ...n, matchups: ms }; })} style={S.pmBtnInline}>−</button>
+                        <span style={{ width: 38, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700" }}>${m.stake}</span>
+                        <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].stake+=1; return { ...n, matchups: ms }; })} style={S.pmBtnInline}>+</button>
+                      </div>
+                    </div>
+                    {/* Units ratio — Nassau only */}
+                    {(m.type||"nassau") === "nassau" && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Units ratio</span>
+                        <span style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
+                          {(m.units||[1,1,2]).join(" : ")} · max ${(m.units||[1,1,2]).reduce((s,u)=>s+u,0) * m.stake}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        {["F","B","18"].map((label, ui) => (
+                          <div key={ui} style={{ flex: 1, textAlign: "center" }}>
+                            <div style={{ fontSize: 10, color: "var(--dim)", marginBottom: 4, letterSpacing: 1, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+                            <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                              <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x,units:[...(x.units||[1,1,2])]})); ms[mi].units[ui]=Math.max(0,ms[mi].units[ui]-1); return { ...n, matchups: ms }; })} style={S.pmBtnInline}>−</button>
+                              <span style={{ width: 28, textAlign: "center", color: (m.units||[1,1,2])[ui]===0?"var(--dim)":"var(--accent)", fontSize: 16, fontWeight: "700" }}>{(m.units||[1,1,2])[ui]}</span>
+                              <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x,units:[...(x.units||[1,1,2])]})); ms[mi].units[ui]+=1; return { ...n, matchups: ms }; })} style={S.pmBtnInline}>+</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    )}
+                    {/* GDB fixed ratio info */}
+                    {(m.type||"nassau") === "gdb" && (
+                    <div style={{ marginBottom: 10, background: "var(--card)", borderRadius: 8, padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Fixed ratio (Game 3× · Dormie 1× · Bye 1×)</span>
+                      <span style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
+                        Game ${m.stake*3} · Dormie ${m.stake} · Bye ${m.stake} · max ${m.stake*5}/9
+                      </span>
+                    </div>
+                    )}
+                    {/* Press mode — greyed out */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", opacity: 0.35, pointerEvents: "none" }}>
+                      <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Press <span style={{ fontSize: 10, color: "var(--dim)" }}>(coming soon)</span></span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {[["off","Off"],["auto","Auto"],["manual","Manual"]].map(([val,label]) => (
+                          <button key={val}
+                            style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: "not-allowed",
+                              border: `1px solid ${m.pressMode===val?"var(--accent)":"var(--border)"}`,
+                              background: m.pressMode===val?"var(--accent)":"transparent",
+                              color: m.pressMode===val?"#000":"var(--muted)",
+                              fontFamily: "'DM Sans', sans-serif" }}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {/* Add matchup button */}
+                {matchupBets.matchups.length < 6 && (
+                  <button onClick={() => setMatchupBets(n => ({
+                    ...n,
+                    matchups: [...n.matchups, { type: "nassau", p1: 0, p2: 1, strokesFront: 0, strokesBack: 0, stake: 5, pressMode: "off", units: [1, 1, 2] }]
+                  }))}
+                    style={{ ...S.courseBtn, width: "100%", textAlign: "center", marginTop: 2 }}>
+                    + Add Matchup ({matchupBets.matchups.length}/6)
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* HCP adjustment */}
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, marginTop: matchupBets.on ? 12 : 2 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>HCP adjustment</span>
                 <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
@@ -807,12 +1262,1269 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "12px 16px 16px", background: isLight ? "linear-gradient(0deg, #ffffff 70%, transparent)" : "linear-gradient(0deg, #0a1a0a 70%, transparent)", maxWidth: 480, margin: "0 auto" }}>
         <button className="start-btn"
           style={{ ...S.startBtn, fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 3, padding: "18px" }}
-          onClick={() => onStart({ names: names.map((n,i) => n.trim()||`Player ${i+1}`), hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games, courseName: loadedCourse ? `${loadedCourse.name} — ${loadedCourse.tee}` : "Custom Course" })}>
+          onClick={() => onStart({ names: names.map((n,i) => n.trim()||`Player ${i+1}`), hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games, nassau: matchupBets, courseName: loadedCourse ? `${loadedCourse.name} — ${loadedCourse.tee}` : "Custom Course" })}>
           START ROUND →
         </button>
       </div>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QR CODE — Bundled qrcode-terminal vendor library (MIT) + SVG renderer
+// No external dependencies. Works offline and in Claude artifacts.
+// ─────────────────────────────────────────────────────────────────────────────
+function createQRMaker(){
+var QRErrorCorrectLevel = {
+	L : 1,
+	M : 0,
+	Q : 3,
+	H : 2
+};
+
+
+var QRMode = {
+    MODE_NUMBER :       1 << 0,
+    MODE_ALPHA_NUM :    1 << 1,
+    MODE_8BIT_BYTE :    1 << 2,
+    MODE_KANJI :        1 << 3
+};
+
+var QRMaskPattern = {
+	PATTERN000 : 0,
+	PATTERN001 : 1,
+	PATTERN010 : 2,
+	PATTERN011 : 3,
+	PATTERN100 : 4,
+	PATTERN101 : 5,
+	PATTERN110 : 6,
+	PATTERN111 : 7
+};
+
+var QRMath = {
+
+	glog : function(n) {
+	
+		if (n < 1) {
+			throw new Error("glog(" + n + ")");
+		}
+		
+		return QRMath.LOG_TABLE[n];
+	},
+	
+	gexp : function(n) {
+	
+		while (n < 0) {
+			n += 255;
+		}
+	
+		while (n >= 256) {
+			n -= 255;
+		}
+	
+		return QRMath.EXP_TABLE[n];
+	},
+	
+	EXP_TABLE : new Array(256),
+	
+	LOG_TABLE : new Array(256)
+
+};
+	
+for (var i = 0; i < 8; i++) {
+	QRMath.EXP_TABLE[i] = 1 << i;
+}
+for (var i = 8; i < 256; i++) {
+	QRMath.EXP_TABLE[i] = QRMath.EXP_TABLE[i - 4]
+		^ QRMath.EXP_TABLE[i - 5]
+		^ QRMath.EXP_TABLE[i - 6]
+		^ QRMath.EXP_TABLE[i - 8];
+}
+for (var i = 0; i < 255; i++) {
+	QRMath.LOG_TABLE[QRMath.EXP_TABLE[i] ] = i;
+}
+
+
+
+function QRPolynomial(num, shift) {
+	if (num.length === undefined) {
+		throw new Error(num.length + "/" + shift);
+	}
+
+	var offset = 0;
+
+	while (offset < num.length && num[offset] === 0) {
+		offset++;
+	}
+
+	this.num = new Array(num.length - offset + shift);
+	for (var i = 0; i < num.length - offset; i++) {
+		this.num[i] = num[i + offset];
+	}
+}
+
+QRPolynomial.prototype = {
+
+	get : function(index) {
+		return this.num[index];
+	},
+	
+	getLength : function() {
+		return this.num.length;
+	},
+	
+	multiply : function(e) {
+	
+		var num = new Array(this.getLength() + e.getLength() - 1);
+	
+		for (var i = 0; i < this.getLength(); i++) {
+			for (var j = 0; j < e.getLength(); j++) {
+				num[i + j] ^= QRMath.gexp(QRMath.glog(this.get(i) ) + QRMath.glog(e.get(j) ) );
+			}
+		}
+	
+		return new QRPolynomial(num, 0);
+	},
+	
+	mod : function(e) {
+	
+		if (this.getLength() - e.getLength() < 0) {
+			return this;
+		}
+	
+		var ratio = QRMath.glog(this.get(0) ) - QRMath.glog(e.get(0) );
+	
+		var num = new Array(this.getLength() );
+		
+		for (var i = 0; i < this.getLength(); i++) {
+			num[i] = this.get(i);
+		}
+		
+		for (var x = 0; x < e.getLength(); x++) {
+			num[x] ^= QRMath.gexp(QRMath.glog(e.get(x) ) + ratio);
+		}
+	
+		// recursive call
+		return new QRPolynomial(num, 0).mod(e);
+	}
+};
+
+
+
+function QRRSBlock(totalCount, dataCount) {
+	this.totalCount = totalCount;
+	this.dataCount  = dataCount;
+}
+
+QRRSBlock.RS_BLOCK_TABLE = [
+
+	// L
+	// M
+	// Q
+	// H
+
+	// 1
+	[1, 26, 19],
+	[1, 26, 16],
+	[1, 26, 13],
+	[1, 26, 9],
+	
+	// 2
+	[1, 44, 34],
+	[1, 44, 28],
+	[1, 44, 22],
+	[1, 44, 16],
+
+	// 3
+	[1, 70, 55],
+	[1, 70, 44],
+	[2, 35, 17],
+	[2, 35, 13],
+
+	// 4		
+	[1, 100, 80],
+	[2, 50, 32],
+	[2, 50, 24],
+	[4, 25, 9],
+	
+	// 5
+	[1, 134, 108],
+	[2, 67, 43],
+	[2, 33, 15, 2, 34, 16],
+	[2, 33, 11, 2, 34, 12],
+	
+	// 6
+	[2, 86, 68],
+	[4, 43, 27],
+	[4, 43, 19],
+	[4, 43, 15],
+	
+	// 7		
+	[2, 98, 78],
+	[4, 49, 31],
+	[2, 32, 14, 4, 33, 15],
+	[4, 39, 13, 1, 40, 14],
+	
+	// 8
+	[2, 121, 97],
+	[2, 60, 38, 2, 61, 39],
+	[4, 40, 18, 2, 41, 19],
+	[4, 40, 14, 2, 41, 15],
+	
+	// 9
+	[2, 146, 116],
+	[3, 58, 36, 2, 59, 37],
+	[4, 36, 16, 4, 37, 17],
+	[4, 36, 12, 4, 37, 13],
+	
+	// 10		
+	[2, 86, 68, 2, 87, 69],
+	[4, 69, 43, 1, 70, 44],
+	[6, 43, 19, 2, 44, 20],
+	[6, 43, 15, 2, 44, 16],
+
+	// 11
+	[4, 101, 81],
+	[1, 80, 50, 4, 81, 51],
+	[4, 50, 22, 4, 51, 23],
+	[3, 36, 12, 8, 37, 13],
+
+	// 12
+	[2, 116, 92, 2, 117, 93],
+	[6, 58, 36, 2, 59, 37],
+	[4, 46, 20, 6, 47, 21],
+	[7, 42, 14, 4, 43, 15],
+
+	// 13
+	[4, 133, 107],
+	[8, 59, 37, 1, 60, 38],
+	[8, 44, 20, 4, 45, 21],
+	[12, 33, 11, 4, 34, 12],
+
+	// 14
+	[3, 145, 115, 1, 146, 116],
+	[4, 64, 40, 5, 65, 41],
+	[11, 36, 16, 5, 37, 17],
+	[11, 36, 12, 5, 37, 13],
+
+	// 15
+	[5, 109, 87, 1, 110, 88],
+	[5, 65, 41, 5, 66, 42],
+	[5, 54, 24, 7, 55, 25],
+	[11, 36, 12],
+
+	// 16
+	[5, 122, 98, 1, 123, 99],
+	[7, 73, 45, 3, 74, 46],
+	[15, 43, 19, 2, 44, 20],
+	[3, 45, 15, 13, 46, 16],
+
+	// 17
+	[1, 135, 107, 5, 136, 108],
+	[10, 74, 46, 1, 75, 47],
+	[1, 50, 22, 15, 51, 23],
+	[2, 42, 14, 17, 43, 15],
+
+	// 18
+	[5, 150, 120, 1, 151, 121],
+	[9, 69, 43, 4, 70, 44],
+	[17, 50, 22, 1, 51, 23],
+	[2, 42, 14, 19, 43, 15],
+
+	// 19
+	[3, 141, 113, 4, 142, 114],
+	[3, 70, 44, 11, 71, 45],
+	[17, 47, 21, 4, 48, 22],
+	[9, 39, 13, 16, 40, 14],
+
+	// 20
+	[3, 135, 107, 5, 136, 108],
+	[3, 67, 41, 13, 68, 42],
+	[15, 54, 24, 5, 55, 25],
+	[15, 43, 15, 10, 44, 16],
+
+	// 21
+	[4, 144, 116, 4, 145, 117],
+	[17, 68, 42],
+	[17, 50, 22, 6, 51, 23],
+	[19, 46, 16, 6, 47, 17],
+
+	// 22
+	[2, 139, 111, 7, 140, 112],
+	[17, 74, 46],
+	[7, 54, 24, 16, 55, 25],
+	[34, 37, 13],
+
+	// 23
+	[4, 151, 121, 5, 152, 122],
+	[4, 75, 47, 14, 76, 48],
+	[11, 54, 24, 14, 55, 25],
+	[16, 45, 15, 14, 46, 16],
+
+	// 24
+	[6, 147, 117, 4, 148, 118],
+	[6, 73, 45, 14, 74, 46],
+	[11, 54, 24, 16, 55, 25],
+	[30, 46, 16, 2, 47, 17],
+
+	// 25
+	[8, 132, 106, 4, 133, 107],
+	[8, 75, 47, 13, 76, 48],
+	[7, 54, 24, 22, 55, 25],
+	[22, 45, 15, 13, 46, 16],
+
+	// 26
+	[10, 142, 114, 2, 143, 115],
+	[19, 74, 46, 4, 75, 47],
+	[28, 50, 22, 6, 51, 23],
+	[33, 46, 16, 4, 47, 17],
+
+	// 27
+	[8, 152, 122, 4, 153, 123],
+	[22, 73, 45, 3, 74, 46],
+	[8, 53, 23, 26, 54, 24],
+	[12, 45, 15, 28, 46, 16],
+
+	// 28
+	[3, 147, 117, 10, 148, 118],
+	[3, 73, 45, 23, 74, 46],
+	[4, 54, 24, 31, 55, 25],
+	[11, 45, 15, 31, 46, 16],
+
+	// 29
+	[7, 146, 116, 7, 147, 117],
+	[21, 73, 45, 7, 74, 46],
+	[1, 53, 23, 37, 54, 24],
+	[19, 45, 15, 26, 46, 16],
+
+	// 30
+	[5, 145, 115, 10, 146, 116],
+	[19, 75, 47, 10, 76, 48],
+	[15, 54, 24, 25, 55, 25],
+	[23, 45, 15, 25, 46, 16],
+
+	// 31
+	[13, 145, 115, 3, 146, 116],
+	[2, 74, 46, 29, 75, 47],
+	[42, 54, 24, 1, 55, 25],
+	[23, 45, 15, 28, 46, 16],
+
+	// 32
+	[17, 145, 115],
+	[10, 74, 46, 23, 75, 47],
+	[10, 54, 24, 35, 55, 25],
+	[19, 45, 15, 35, 46, 16],
+
+	// 33
+	[17, 145, 115, 1, 146, 116],
+	[14, 74, 46, 21, 75, 47],
+	[29, 54, 24, 19, 55, 25],
+	[11, 45, 15, 46, 46, 16],
+
+	// 34
+	[13, 145, 115, 6, 146, 116],
+	[14, 74, 46, 23, 75, 47],
+	[44, 54, 24, 7, 55, 25],
+	[59, 46, 16, 1, 47, 17],
+
+	// 35
+	[12, 151, 121, 7, 152, 122],
+	[12, 75, 47, 26, 76, 48],
+	[39, 54, 24, 14, 55, 25],
+	[22, 45, 15, 41, 46, 16],
+
+	// 36
+	[6, 151, 121, 14, 152, 122],
+	[6, 75, 47, 34, 76, 48],
+	[46, 54, 24, 10, 55, 25],
+	[2, 45, 15, 64, 46, 16],
+
+	// 37
+	[17, 152, 122, 4, 153, 123],
+	[29, 74, 46, 14, 75, 47],
+	[49, 54, 24, 10, 55, 25],
+	[24, 45, 15, 46, 46, 16],
+
+	// 38
+	[4, 152, 122, 18, 153, 123],
+	[13, 74, 46, 32, 75, 47],
+	[48, 54, 24, 14, 55, 25],
+	[42, 45, 15, 32, 46, 16],
+
+	// 39
+	[20, 147, 117, 4, 148, 118],
+	[40, 75, 47, 7, 76, 48],
+	[43, 54, 24, 22, 55, 25],
+	[10, 45, 15, 67, 46, 16],
+
+	// 40
+	[19, 148, 118, 6, 149, 119],
+	[18, 75, 47, 31, 76, 48],
+	[34, 54, 24, 34, 55, 25],
+	[20, 45, 15, 61, 46, 16]
+];
+
+QRRSBlock.getRSBlocks = function(typeNumber, errorCorrectLevel) {
+	
+	var rsBlock = QRRSBlock.getRsBlockTable(typeNumber, errorCorrectLevel);
+	
+	if (rsBlock === undefined) {
+		throw new Error("bad rs block @ typeNumber:" + typeNumber + "/errorCorrectLevel:" + errorCorrectLevel);
+	}
+
+	var length = rsBlock.length / 3;
+	
+	var list = [];
+	
+	for (var i = 0; i < length; i++) {
+
+		var count = rsBlock[i * 3 + 0];
+		var totalCount = rsBlock[i * 3 + 1];
+		var dataCount  = rsBlock[i * 3 + 2];
+
+		for (var j = 0; j < count; j++) {
+			list.push(new QRRSBlock(totalCount, dataCount) );	
+		}
+	}
+	
+	return list;
+};
+
+QRRSBlock.getRsBlockTable = function(typeNumber, errorCorrectLevel) {
+
+	switch(errorCorrectLevel) {
+	case QRErrorCorrectLevel.L :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 0];
+	case QRErrorCorrectLevel.M :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 1];
+	case QRErrorCorrectLevel.Q :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 2];
+	case QRErrorCorrectLevel.H :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 3];
+	default :
+		return undefined;
+	}
+};
+
+
+
+var QRUtil = {
+
+    PATTERN_POSITION_TABLE : [
+        [],
+        [6, 18],
+        [6, 22],
+        [6, 26],
+        [6, 30],
+        [6, 34],
+        [6, 22, 38],
+        [6, 24, 42],
+        [6, 26, 46],
+        [6, 28, 50],
+        [6, 30, 54],        
+        [6, 32, 58],
+        [6, 34, 62],
+        [6, 26, 46, 66],
+        [6, 26, 48, 70],
+        [6, 26, 50, 74],
+        [6, 30, 54, 78],
+        [6, 30, 56, 82],
+        [6, 30, 58, 86],
+        [6, 34, 62, 90],
+        [6, 28, 50, 72, 94],
+        [6, 26, 50, 74, 98],
+        [6, 30, 54, 78, 102],
+        [6, 28, 54, 80, 106],
+        [6, 32, 58, 84, 110],
+        [6, 30, 58, 86, 114],
+        [6, 34, 62, 90, 118],
+        [6, 26, 50, 74, 98, 122],
+        [6, 30, 54, 78, 102, 126],
+        [6, 26, 52, 78, 104, 130],
+        [6, 30, 56, 82, 108, 134],
+        [6, 34, 60, 86, 112, 138],
+        [6, 30, 58, 86, 114, 142],
+        [6, 34, 62, 90, 118, 146],
+        [6, 30, 54, 78, 102, 126, 150],
+        [6, 24, 50, 76, 102, 128, 154],
+        [6, 28, 54, 80, 106, 132, 158],
+        [6, 32, 58, 84, 110, 136, 162],
+        [6, 26, 54, 82, 110, 138, 166],
+        [6, 30, 58, 86, 114, 142, 170]
+    ],
+
+    G15 : (1 << 10) | (1 << 8) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0),
+    G18 : (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 5) | (1 << 2) | (1 << 0),
+    G15_MASK : (1 << 14) | (1 << 12) | (1 << 10)    | (1 << 4) | (1 << 1),
+
+    getBCHTypeInfo : function(data) {
+        var d = data << 10;
+        while (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G15) >= 0) {
+            d ^= (QRUtil.G15 << (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G15) ) );    
+        }
+        return ( (data << 10) | d) ^ QRUtil.G15_MASK;
+    },
+
+    getBCHTypeNumber : function(data) {
+        var d = data << 12;
+        while (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G18) >= 0) {
+            d ^= (QRUtil.G18 << (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G18) ) );    
+        }
+        return (data << 12) | d;
+    },
+
+    getBCHDigit : function(data) {
+
+        var digit = 0;
+
+        while (data !== 0) {
+            digit++;
+            data >>>= 1;
+        }
+
+        return digit;
+    },
+
+    getPatternPosition : function(typeNumber) {
+        return QRUtil.PATTERN_POSITION_TABLE[typeNumber - 1];
+    },
+
+    getMask : function(maskPattern, i, j) {
+        
+        switch (maskPattern) {
+            
+        case QRMaskPattern.PATTERN000 : return (i + j) % 2 === 0;
+        case QRMaskPattern.PATTERN001 : return i % 2 === 0;
+        case QRMaskPattern.PATTERN010 : return j % 3 === 0;
+        case QRMaskPattern.PATTERN011 : return (i + j) % 3 === 0;
+        case QRMaskPattern.PATTERN100 : return (Math.floor(i / 2) + Math.floor(j / 3) ) % 2 === 0;
+        case QRMaskPattern.PATTERN101 : return (i * j) % 2 + (i * j) % 3 === 0;
+        case QRMaskPattern.PATTERN110 : return ( (i * j) % 2 + (i * j) % 3) % 2 === 0;
+        case QRMaskPattern.PATTERN111 : return ( (i * j) % 3 + (i + j) % 2) % 2 === 0;
+
+        default :
+            throw new Error("bad maskPattern:" + maskPattern);
+        }
+    },
+
+    getErrorCorrectPolynomial : function(errorCorrectLength) {
+
+        var a = new QRPolynomial([1], 0);
+
+        for (var i = 0; i < errorCorrectLength; i++) {
+            a = a.multiply(new QRPolynomial([1, QRMath.gexp(i)], 0) );
+        }
+
+        return a;
+    },
+
+    getLengthInBits : function(mode, type) {
+
+        if (1 <= type && type < 10) {
+
+            // 1 - 9
+
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 10;
+            case QRMode.MODE_ALPHA_NUM  : return 9;
+            case QRMode.MODE_8BIT_BYTE  : return 8;
+            case QRMode.MODE_KANJI      : return 8;
+            default :
+                throw new Error("mode:" + mode);
+            }
+
+        } else if (type < 27) {
+
+            // 10 - 26
+
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 12;
+            case QRMode.MODE_ALPHA_NUM  : return 11;
+            case QRMode.MODE_8BIT_BYTE  : return 16;
+            case QRMode.MODE_KANJI      : return 10;
+            default :
+                throw new Error("mode:" + mode);
+            }
+
+        } else if (type < 41) {
+
+            // 27 - 40
+
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 14;
+            case QRMode.MODE_ALPHA_NUM  : return 13;
+            case QRMode.MODE_8BIT_BYTE  : return 16;
+            case QRMode.MODE_KANJI      : return 12;
+            default :
+                throw new Error("mode:" + mode);
+            }
+
+        } else {
+            throw new Error("type:" + type);
+        }
+    },
+
+    getLostPoint : function(qrCode) {
+        
+        var moduleCount = qrCode.getModuleCount();
+        var lostPoint = 0;
+        var row = 0; 
+        var col = 0;
+
+        
+        // LEVEL1
+        
+        for (row = 0; row < moduleCount; row++) {
+
+            for (col = 0; col < moduleCount; col++) {
+
+                var sameCount = 0;
+                var dark = qrCode.isDark(row, col);
+
+                for (var r = -1; r <= 1; r++) {
+
+                    if (row + r < 0 || moduleCount <= row + r) {
+                        continue;
+                    }
+
+                    for (var c = -1; c <= 1; c++) {
+
+                        if (col + c < 0 || moduleCount <= col + c) {
+                            continue;
+                        }
+
+                        if (r === 0 && c === 0) {
+                            continue;
+                        }
+
+                        if (dark === qrCode.isDark(row + r, col + c) ) {
+                            sameCount++;
+                        }
+                    }
+                }
+
+                if (sameCount > 5) {
+                    lostPoint += (3 + sameCount - 5);
+                }
+            }
+        }
+
+        // LEVEL2
+
+        for (row = 0; row < moduleCount - 1; row++) {
+            for (col = 0; col < moduleCount - 1; col++) {
+                var count = 0;
+                if (qrCode.isDark(row,     col    ) ) count++;
+                if (qrCode.isDark(row + 1, col    ) ) count++;
+                if (qrCode.isDark(row,     col + 1) ) count++;
+                if (qrCode.isDark(row + 1, col + 1) ) count++;
+                if (count === 0 || count === 4) {
+                    lostPoint += 3;
+                }
+            }
+        }
+
+        // LEVEL3
+
+        for (row = 0; row < moduleCount; row++) {
+            for (col = 0; col < moduleCount - 6; col++) {
+                if (qrCode.isDark(row, col) && 
+                        !qrCode.isDark(row, col + 1) && 
+                         qrCode.isDark(row, col + 2) && 
+                         qrCode.isDark(row, col + 3) && 
+                         qrCode.isDark(row, col + 4) && 
+                        !qrCode.isDark(row, col + 5) && 
+                         qrCode.isDark(row, col + 6) ) {
+                    lostPoint += 40;
+                }
+            }
+        }
+
+        for (col = 0; col < moduleCount; col++) {
+            for (row = 0; row < moduleCount - 6; row++) {
+                if (qrCode.isDark(row, col) &&
+                        !qrCode.isDark(row + 1, col) &&
+                         qrCode.isDark(row + 2, col) &&
+                         qrCode.isDark(row + 3, col) &&
+                         qrCode.isDark(row + 4, col) &&
+                        !qrCode.isDark(row + 5, col) &&
+                         qrCode.isDark(row + 6, col) ) {
+                    lostPoint += 40;
+                }
+            }
+        }
+
+        // LEVEL4
+        
+        var darkCount = 0;
+
+        for (col = 0; col < moduleCount; col++) {
+            for (row = 0; row < moduleCount; row++) {
+                if (qrCode.isDark(row, col) ) {
+                    darkCount++;
+                }
+            }
+        }
+        
+        var ratio = Math.abs(100 * darkCount / moduleCount / moduleCount - 50) / 5;
+        lostPoint += ratio * 10;
+
+        return lostPoint;       
+    }
+
+};
+
+
+function QRBitBuffer() {
+	this.buffer = [];
+	this.length = 0;
+}
+
+QRBitBuffer.prototype = {
+
+	get : function(index) {
+		var bufIndex = Math.floor(index / 8);
+		return ( (this.buffer[bufIndex] >>> (7 - index % 8) ) & 1) == 1;
+	},
+	
+	put : function(num, length) {
+		for (var i = 0; i < length; i++) {
+			this.putBit( ( (num >>> (length - i - 1) ) & 1) == 1);
+		}
+	},
+	
+	getLengthInBits : function() {
+		return this.length;
+	},
+	
+	putBit : function(bit) {
+	
+		var bufIndex = Math.floor(this.length / 8);
+		if (this.buffer.length <= bufIndex) {
+			this.buffer.push(0);
+		}
+	
+		if (bit) {
+			this.buffer[bufIndex] |= (0x80 >>> (this.length % 8) );
+		}
+	
+		this.length++;
+	}
+};
+
+
+
+function QR8bitByte(data) {
+	this.mode = QRMode.MODE_8BIT_BYTE;
+	this.data = data;
+}
+
+QR8bitByte.prototype = {
+
+	getLength : function() {
+		return this.data.length;
+	},
+	
+	write : function(buffer) {
+		for (var i = 0; i < this.data.length; i++) {
+			// not JIS ...
+			buffer.put(this.data.charCodeAt(i), 8);
+		}
+	}
+};
+
+
+//---------------------------------------------------------------------
+// QRCode for JavaScript
+//
+// Copyright (c) 2009 Kazuhiko Arase
+//
+// URL: http://www.d-project.com/
+//
+// Licensed under the MIT license:
+//   http://www.opensource.org/licenses/mit-license.php
+//
+// The word "QR Code" is registered trademark of 
+// DENSO WAVE INCORPORATED
+//   http://www.denso-wave.com/qrcode/faqpatent-e.html
+//
+//---------------------------------------------------------------------
+// Modified to work in node for this project (and some refactoring)
+//---------------------------------------------------------------------
+
+
+function QRCode(typeNumber, errorCorrectLevel) {
+	this.typeNumber = typeNumber;
+	this.errorCorrectLevel = errorCorrectLevel;
+	this.modules = null;
+	this.moduleCount = 0;
+	this.dataCache = null;
+	this.dataList = [];
+}
+
+QRCode.prototype = {
+	
+	addData : function(data) {
+		var newData = new QR8bitByte(data);
+		this.dataList.push(newData);
+		this.dataCache = null;
+	},
+	
+	isDark : function(row, col) {
+		if (row < 0 || this.moduleCount <= row || col < 0 || this.moduleCount <= col) {
+			throw new Error(row + "," + col);
+		}
+		return this.modules[row][col];
+	},
+
+	getModuleCount : function() {
+		return this.moduleCount;
+	},
+	
+	make : function() {
+		// Calculate automatically typeNumber if provided is < 1
+		if (this.typeNumber < 1 ){
+			var typeNumber = 1;
+			for (typeNumber = 1; typeNumber < 40; typeNumber++) {
+				var rsBlocks = QRRSBlock.getRSBlocks(typeNumber, this.errorCorrectLevel);
+
+				var buffer = new QRBitBuffer();
+				var totalDataCount = 0;
+				for (var i = 0; i < rsBlocks.length; i++) {
+					totalDataCount += rsBlocks[i].dataCount;
+				}
+
+				for (var x = 0; x < this.dataList.length; x++) {
+					var data = this.dataList[x];
+					buffer.put(data.mode, 4);
+					buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber) );
+					data.write(buffer);
+				}
+				if (buffer.getLengthInBits() <= totalDataCount * 8)
+					break;
+			}
+			this.typeNumber = typeNumber;
+		}
+		this.makeImpl(false, this.getBestMaskPattern() );
+	},
+	
+	makeImpl : function(test, maskPattern) {
+		
+		this.moduleCount = this.typeNumber * 4 + 17;
+		this.modules = new Array(this.moduleCount);
+		
+		for (var row = 0; row < this.moduleCount; row++) {
+			
+			this.modules[row] = new Array(this.moduleCount);
+			
+			for (var col = 0; col < this.moduleCount; col++) {
+				this.modules[row][col] = null;//(col + row) % 3;
+			}
+		}
+	
+		this.setupPositionProbePattern(0, 0);
+		this.setupPositionProbePattern(this.moduleCount - 7, 0);
+		this.setupPositionProbePattern(0, this.moduleCount - 7);
+		this.setupPositionAdjustPattern();
+		this.setupTimingPattern();
+		this.setupTypeInfo(test, maskPattern);
+		
+		if (this.typeNumber >= 7) {
+			this.setupTypeNumber(test);
+		}
+	
+		if (this.dataCache === null) {
+			this.dataCache = QRCode.createData(this.typeNumber, this.errorCorrectLevel, this.dataList);
+		}
+	
+		this.mapData(this.dataCache, maskPattern);
+	},
+
+	setupPositionProbePattern : function(row, col)  {
+		
+		for (var r = -1; r <= 7; r++) {
+			
+			if (row + r <= -1 || this.moduleCount <= row + r) continue;
+			
+			for (var c = -1; c <= 7; c++) {
+				
+				if (col + c <= -1 || this.moduleCount <= col + c) continue;
+				
+				if ( (0 <= r && r <= 6 && (c === 0 || c === 6) ) || 
+                     (0 <= c && c <= 6 && (r === 0 || r === 6) ) || 
+                     (2 <= r && r <= 4 && 2 <= c && c <= 4) ) {
+					this.modules[row + r][col + c] = true;
+				} else {
+					this.modules[row + r][col + c] = false;
+				}
+			}		
+		}		
+	},
+	
+	getBestMaskPattern : function() {
+	
+		var minLostPoint = 0;
+		var pattern = 0;
+	
+		for (var i = 0; i < 8; i++) {
+			
+			this.makeImpl(true, i);
+	
+			var lostPoint = QRUtil.getLostPoint(this);
+	
+			if (i === 0 || minLostPoint >  lostPoint) {
+				minLostPoint = lostPoint;
+				pattern = i;
+			}
+		}
+	
+		return pattern;
+	},
+	
+	createMovieClip : function(target_mc, instance_name, depth) {
+	
+		var qr_mc = target_mc.createEmptyMovieClip(instance_name, depth);
+		var cs = 1;
+	
+		this.make();
+
+		for (var row = 0; row < this.modules.length; row++) {
+			
+			var y = row * cs;
+			
+			for (var col = 0; col < this.modules[row].length; col++) {
+	
+				var x = col * cs;
+				var dark = this.modules[row][col];
+			
+				if (dark) {
+					qr_mc.beginFill(0, 100);
+					qr_mc.moveTo(x, y);
+					qr_mc.lineTo(x + cs, y);
+					qr_mc.lineTo(x + cs, y + cs);
+					qr_mc.lineTo(x, y + cs);
+					qr_mc.endFill();
+				}
+			}
+		}
+		
+		return qr_mc;
+	},
+
+	setupTimingPattern : function() {
+		
+		for (var r = 8; r < this.moduleCount - 8; r++) {
+			if (this.modules[r][6] !== null) {
+				continue;
+			}
+			this.modules[r][6] = (r % 2 === 0);
+		}
+	
+		for (var c = 8; c < this.moduleCount - 8; c++) {
+			if (this.modules[6][c] !== null) {
+				continue;
+			}
+			this.modules[6][c] = (c % 2 === 0);
+		}
+	},
+	
+	setupPositionAdjustPattern : function() {
+	
+		var pos = QRUtil.getPatternPosition(this.typeNumber);
+		
+		for (var i = 0; i < pos.length; i++) {
+		
+			for (var j = 0; j < pos.length; j++) {
+			
+				var row = pos[i];
+				var col = pos[j];
+				
+				if (this.modules[row][col] !== null) {
+					continue;
+				}
+				
+				for (var r = -2; r <= 2; r++) {
+				
+					for (var c = -2; c <= 2; c++) {
+					
+						if (Math.abs(r) === 2 || 
+                            Math.abs(c) === 2 ||
+                            (r === 0 && c === 0) ) {
+							this.modules[row + r][col + c] = true;
+						} else {
+							this.modules[row + r][col + c] = false;
+						}
+					}
+				}
+			}
+		}
+	},
+	
+	setupTypeNumber : function(test) {
+	
+		var bits = QRUtil.getBCHTypeNumber(this.typeNumber);
+        var mod;
+	
+		for (var i = 0; i < 18; i++) {
+			mod = (!test && ( (bits >> i) & 1) === 1);
+			this.modules[Math.floor(i / 3)][i % 3 + this.moduleCount - 8 - 3] = mod;
+		}
+	
+		for (var x = 0; x < 18; x++) {
+			mod = (!test && ( (bits >> x) & 1) === 1);
+			this.modules[x % 3 + this.moduleCount - 8 - 3][Math.floor(x / 3)] = mod;
+		}
+	},
+	
+	setupTypeInfo : function(test, maskPattern) {
+	
+		var data = (this.errorCorrectLevel << 3) | maskPattern;
+		var bits = QRUtil.getBCHTypeInfo(data);
+        var mod;
+	
+		// vertical		
+		for (var v = 0; v < 15; v++) {
+	
+			mod = (!test && ( (bits >> v) & 1) === 1);
+	
+			if (v < 6) {
+				this.modules[v][8] = mod;
+			} else if (v < 8) {
+				this.modules[v + 1][8] = mod;
+			} else {
+				this.modules[this.moduleCount - 15 + v][8] = mod;
+			}
+		}
+	
+		// horizontal
+		for (var h = 0; h < 15; h++) {
+	
+			mod = (!test && ( (bits >> h) & 1) === 1);
+			
+			if (h < 8) {
+				this.modules[8][this.moduleCount - h - 1] = mod;
+			} else if (h < 9) {
+				this.modules[8][15 - h - 1 + 1] = mod;
+			} else {
+				this.modules[8][15 - h - 1] = mod;
+			}
+		}
+	
+		// fixed module
+		this.modules[this.moduleCount - 8][8] = (!test);
+	
+	},
+	
+	mapData : function(data, maskPattern) {
+		
+		var inc = -1;
+		var row = this.moduleCount - 1;
+		var bitIndex = 7;
+		var byteIndex = 0;
+		
+		for (var col = this.moduleCount - 1; col > 0; col -= 2) {
+	
+			if (col === 6) col--;
+	
+			while (true) {
+	
+				for (var c = 0; c < 2; c++) {
+					
+					if (this.modules[row][col - c] === null) {
+						
+						var dark = false;
+	
+						if (byteIndex < data.length) {
+							dark = ( ( (data[byteIndex] >>> bitIndex) & 1) === 1);
+						}
+	
+						var mask = QRUtil.getMask(maskPattern, row, col - c);
+	
+						if (mask) {
+							dark = !dark;
+						}
+						
+						this.modules[row][col - c] = dark;
+						bitIndex--;
+	
+						if (bitIndex === -1) {
+							byteIndex++;
+							bitIndex = 7;
+						}
+					}
+				}
+								
+				row += inc;
+	
+				if (row < 0 || this.moduleCount <= row) {
+					row -= inc;
+					inc = -inc;
+					break;
+				}
+			}
+		}
+		
+	}
+
+};
+
+QRCode.PAD0 = 0xEC;
+QRCode.PAD1 = 0x11;
+
+QRCode.createData = function(typeNumber, errorCorrectLevel, dataList) {
+	
+	var rsBlocks = QRRSBlock.getRSBlocks(typeNumber, errorCorrectLevel);
+	
+	var buffer = new QRBitBuffer();
+	
+	for (var i = 0; i < dataList.length; i++) {
+		var data = dataList[i];
+		buffer.put(data.mode, 4);
+		buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber) );
+		data.write(buffer);
+	}
+
+	// calc num max data.
+	var totalDataCount = 0;
+	for (var x = 0; x < rsBlocks.length; x++) {
+		totalDataCount += rsBlocks[x].dataCount;
+	}
+
+	if (buffer.getLengthInBits() > totalDataCount * 8) {
+		throw new Error("code length overflow. (" + 
+            buffer.getLengthInBits() + 
+            ">" +  
+            totalDataCount * 8 + 
+            ")");
+	}
+
+	// end code
+	if (buffer.getLengthInBits() + 4 <= totalDataCount * 8) {
+		buffer.put(0, 4);
+	}
+
+	// padding
+	while (buffer.getLengthInBits() % 8 !== 0) {
+		buffer.putBit(false);
+	}
+
+	// padding
+	while (true) {
+		
+		if (buffer.getLengthInBits() >= totalDataCount * 8) {
+			break;
+		}
+		buffer.put(QRCode.PAD0, 8);
+		
+		if (buffer.getLengthInBits() >= totalDataCount * 8) {
+			break;
+		}
+		buffer.put(QRCode.PAD1, 8);
+	}
+
+	return QRCode.createBytes(buffer, rsBlocks);
+};
+
+QRCode.createBytes = function(buffer, rsBlocks) {
+
+	var offset = 0;
+	
+	var maxDcCount = 0;
+	var maxEcCount = 0;
+	
+	var dcdata = new Array(rsBlocks.length);
+	var ecdata = new Array(rsBlocks.length);
+	
+	for (var r = 0; r < rsBlocks.length; r++) {
+
+		var dcCount = rsBlocks[r].dataCount;
+		var ecCount = rsBlocks[r].totalCount - dcCount;
+
+		maxDcCount = Math.max(maxDcCount, dcCount);
+		maxEcCount = Math.max(maxEcCount, ecCount);
+		
+		dcdata[r] = new Array(dcCount);
+		
+		for (var i = 0; i < dcdata[r].length; i++) {
+			dcdata[r][i] = 0xff & buffer.buffer[i + offset];
+		}
+		offset += dcCount;
+		
+		var rsPoly = QRUtil.getErrorCorrectPolynomial(ecCount);
+		var rawPoly = new QRPolynomial(dcdata[r], rsPoly.getLength() - 1);
+
+		var modPoly = rawPoly.mod(rsPoly);
+		ecdata[r] = new Array(rsPoly.getLength() - 1);
+		for (var x = 0; x < ecdata[r].length; x++) {
+            var modIndex = x + modPoly.getLength() - ecdata[r].length;
+			ecdata[r][x] = (modIndex >= 0)? modPoly.get(modIndex) : 0;
+		}
+
+	}
+	
+	var totalCodeCount = 0;
+	for (var y = 0; y < rsBlocks.length; y++) {
+		totalCodeCount += rsBlocks[y].totalCount;
+	}
+
+	var data = new Array(totalCodeCount);
+	var index = 0;
+
+	for (var z = 0; z < maxDcCount; z++) {
+		for (var s = 0; s < rsBlocks.length; s++) {
+			if (z < dcdata[s].length) {
+				data[index++] = dcdata[s][z];
+			}
+		}
+	}
+
+	for (var xx = 0; xx < maxEcCount; xx++) {
+		for (var t = 0; t < rsBlocks.length; t++) {
+			if (xx < ecdata[t].length) {
+				data[index++] = ecdata[t][xx];
+			}
+		}
+	}
+
+	return data;
+
+};
+
+
+
+return QRCode;
+}
+
+function QRCodeDisplay({ payload, size = 220 }) {
+  const [svg, setSvg] = React.useState(null);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!payload) return;
+    try {
+      const QRCode = createQRMaker();
+      const qr = new QRCode(-1, 1); // auto version, ECC level L
+      qr.addData(payload);
+      qr.make();
+      const n = qr.getModuleCount();
+      const cell = size / (n + 8);
+      const off = cell * 4;
+      let rects = `<rect width="${size}" height="${size}" fill="white"/>`;
+      for (let r = 0; r < n; r++)
+        for (let c = 0; c < n; c++)
+          if (qr.isDark(r, c))
+            rects += `<rect x="${(off+c*cell).toFixed(2)}" y="${(off+r*cell).toFixed(2)}" width="${(cell+0.1).toFixed(2)}" height="${(cell+0.1).toFixed(2)}" fill="black"/>`;
+      setSvg(`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" style="display:block">${rects}</svg>`);
+      setError(null);
+    } catch(e) {
+      console.error("QR error:", e);
+      setError(e.message);
+    }
+  }, [payload, size]);
+
+  if (error) return <div style={{ fontSize: 11, color: "var(--neg)", fontFamily: "'DM Sans', sans-serif", textAlign: "center" }}>QR failed: {error}</div>;
+  if (!svg) return <div style={{ width: size, height: size, background: "#f5f5f5", borderRadius: 8 }} />;
+  return <div style={{ display: "inline-block", borderRadius: 8, overflow: "hidden" }} dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -837,6 +2549,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   const [adjustments, setAdjustments] = useState(saved?.adjustments || [0,0,0,0]);
   const [saveMsg, setSaveMsg] = useState("");
 
+  // Nassau live state
+  const matchupEnabled = !!config.nassau?.on;
+  const [matchups, setMatchups] = useState(() =>
+    saved?.nassauMatchups || (config.nassau?.matchups || DEFAULT_MATCHUP).map(m => ({ ...m }))
+  );
+  const [showBackStrokeModal, setShowBackStrokeModal] = useState(false);
+
   // Swipe support
   const touchStartX = useRef(null);
   const touchStartY = useRef(null);
@@ -860,6 +2579,11 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     touchStartY.current = null;
   }, [view, holeIdx]);
 
+  // Open second nine stroke adjustment modal
+  function triggerBackStrokeModal() {
+    setShowBackStrokeModal(true);
+  }
+
   function setScore(hi, pi, val) {
     setGross(prev => {
       const n = prev.map(r => [...r]);
@@ -871,7 +2595,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         setTimeout(() => {
           onSave({
             roundId,
-            config: { ...config, _roundId: roundId, _savedState: { gross: n, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments } },
+            config: { ...config, _roundId: roundId, _savedState: { gross: n, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments, matchups } },
             date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
             courseName: config.courseName || "Round",
           });
@@ -909,6 +2633,39 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     (games.ct?ctCum[pi]*ctVal:0) +
     (games.p3?p3Cum[pi]*p3Val:0) +
     adjustments[pi]);
+
+  // Nassau / GDB computation
+  const matchupResults = matchupEnabled ? matchups.map(m => {
+    if ((m.type || "nassau") === "gdb") {
+      const result = computeGDB(m, gross, holes, inPlay);
+      const dol = gdbDollars(m, result.front, result.back);
+      return { ...result, dollars: dol, type: "gdb" };
+    } else {
+      const result = computeNassau(m, gross, holes, inPlay);
+      const dol = nassauDollars(m, result.front, result.back, result.overall, result.presses);
+      return { ...result, dollars: dol, type: "nassau" };
+    }
+  }) : [];
+
+  const matchupPlayerDollars = [0, 0, 0, 0];
+  if (matchupEnabled) {
+    matchupResults.forEach((r, mi) => {
+      const m = matchups[mi];
+      matchupPlayerDollars[m.p1] += r.dollars.net;
+      matchupPlayerDollars[m.p2] -= r.dollars.net;
+    });
+  }
+
+  const dollarsTotal = [0,1,2,3].map(pi => dollars[pi] + matchupPlayerDollars[pi]);
+
+  // Build QR payload — recompute only when inPlay or dollar totals actually change
+  const qrPayload = React.useMemo(() => buildQRPayload({
+    names: liveNames, hcps: liveHcps, holes, scores: gross, inPlay,
+    games, stakes: { vegasVal, ctVal, p3Val },
+    vTeams, dollars: dollarsTotal,
+    matchups, nassauResults: matchupResults, matchupEnabled,
+    courseName: config.courseName,
+  }), [inPlay.join(","), dollarsTotal.join(","), matchupEnabled]);
 
   const h = holes[holeIdx];
   const res = results[holeIdx];
@@ -948,6 +2705,100 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         @keyframes scoreIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .score-in { animation: scoreIn 0.15s ease-out; }
       `}</style>
+
+      {showBackStrokeModal && matchupEnabled && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+            {(() => {
+              const frontPlayed = inPlay.slice(0, 9).filter(Boolean).length;
+              const backPlayed  = inPlay.slice(9, 18).filter(Boolean).length;
+              const secondNineIsBack = frontPlayed >= backPlayed;
+              const firstNineLabel = secondNineIsBack ? "Front 9" : "Back 9";
+              const secondNineLabel = secondNineIsBack ? "Back 9" : "Front 9";
+              return (
+                <>
+                  <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, marginBottom: 4, fontFamily: "'DM Sans', sans-serif", flexShrink: 0 }}>
+                    TURN — {secondNineLabel.toUpperCase()} STROKES
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 16, fontFamily: "'DM Sans', sans-serif", flexShrink: 0 }}>
+                    Adjust strokes for {secondNineLabel}. Tap ± to change.
+                  </div>
+                  <div style={{ overflowY: "auto", flex: 1, marginBottom: 12 }}>
+                  {matchups.map((m, mi) => {
+                    const field = secondNineIsBack ? "strokesBack" : "strokesFront";
+                    const currentVal = m[field];
+                    const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
+                    const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
+                    // giver = original p1 if positive, p2 if negative (they now give)
+                    const giver   = currentVal >= 0 ? m.p1 : m.p2;
+                    const receiver = currentVal >= 0 ? m.p2 : m.p1;
+                    const givercol   = currentVal >= 0 ? p1col : p2col;
+                    const receivercol = currentVal >= 0 ? p2col : p1col;
+
+                    // First nine result for this matchup
+                    const firstNineStart = secondNineIsBack ? 0 : 9;
+                    const firstNineStrokeMaps = buildNassauStrokeMaps(m, holes);
+                    let p1wins = 0, p2wins = 0;
+                    for (let h = firstNineStart; h < firstNineStart + 9; h++) {
+                      if (!inPlay[h]) continue;
+                      const g1 = parseInt(gross[h][m.p1], 10);
+                      const g2 = parseInt(gross[h][m.p2], 10);
+                      if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
+                      const strk = strokesForHole(h, holes[h].si, firstNineStrokeMaps);
+                      const cap = holes[h].par === 3 ? holes[h].par + 3 : holes[h].par + 4;
+                      const n1 = Math.min(g1 - strk.p1, cap);
+                      const n2 = Math.min(g2 - strk.p2, cap);
+                      if (n1 < n2) p1wins++; else if (n2 < n1) p2wins++;
+                    }
+                    const netHoles = p1wins - p2wins; // positive = p1 leads
+                    const firstNineWinner = netHoles > 0 ? m.p1 : netHoles < 0 ? m.p2 : null;
+                    const firstNineWinCol = netHoles > 0 ? p1col : p2col;
+
+                    return (
+                      <div key={mi} style={{ marginBottom: 0, paddingBottom: 18, borderBottom: mi < matchups.length - 1 ? "1px solid var(--border2)" : "none", marginTop: mi > 0 ? 18 : 0 }}>
+                        <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
+                          <span style={{ fontSize: 10, color: "var(--dim)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1}</span>
+                          <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
+                        </div>
+                        {/* First nine result */}
+                        <div style={{ background: "var(--input)", borderRadius: 6, padding: "6px 10px", marginBottom: 10, fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                          <span style={{ color: "var(--dim)" }}>{firstNineLabel}: </span>
+                          {firstNineWinner !== null
+                            ? <span style={{ color: firstNineWinCol, fontWeight: "700" }}>{liveNames[firstNineWinner]} {Math.abs(netHoles)} UP ({p1wins}W–{p2wins}W)</span>
+                            : <span style={{ color: "var(--text)", fontWeight: "700" }}>All Square ({p1wins}W–{p2wins}W)</span>
+                          }
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div>
+                            <span style={{ fontSize: 12, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>{secondNineLabel} strokes</span>
+                            <div style={{ fontSize: 12, fontFamily: "'DM Sans', sans-serif", marginTop: 2 }}>
+                              {currentVal === 0
+                                ? <span style={{ color: "var(--dim)" }}>Scratch</span>
+                                : currentVal > 0
+                                  ? <><span style={{ color: givercol, fontWeight:"600" }}>{liveNames[giver]}</span><span style={{ color:"var(--muted)" }}> gives </span><span style={{ color: receivercol, fontWeight:"600" }}>{liveNames[receiver]}</span><span style={{ color:"var(--muted)" }}> {Math.abs(currentVal)} stroke{Math.abs(currentVal)!==1?"s":""}</span></>
+                                  : <><span style={{ color: givercol, fontWeight:"600" }}>{liveNames[giver]}</span><span style={{ color:"var(--neg)" }}> now gives </span><span style={{ color: receivercol, fontWeight:"600" }}>{liveNames[receiver]}</span><span style={{ color:"var(--neg)" }}> {Math.abs(currentVal)} stroke{Math.abs(currentVal)!==1?"s":""}</span></>
+                              }
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                            <button className="pm-btn" onClick={() => setMatchups(prev => { const n=prev.map(x=>({...x})); n[mi][field]-=1; return n; })} style={S.pmBtnInline}>−</button>
+                            <span style={{ width: 38, textAlign: "center", color: "var(--accent)", fontSize: 18, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{Math.abs(currentVal)}</span>
+                            <button className="pm-btn" onClick={() => setMatchups(prev => { const n=prev.map(x=>({...x})); n[mi][field]+=1; return n; })} style={S.pmBtnInline}>+</button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  </div>
+                  <button className="start-btn" style={{ ...S.startBtn, marginTop: 4, flexShrink: 0 }} onClick={() => setShowBackStrokeModal(false)}>
+                    Confirm →
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* Sticky header */}
       <div style={{ position: "sticky", top: 0, zIndex: 100, background: "var(--card)", borderBottom: "1px solid var(--border)", boxShadow: isLight ? "0 2px 8px rgba(0,0,0,0.1)" : "none" }}>
@@ -1095,7 +2946,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   setTimeout(() => {
                     onSave({
                       roundId,
-                      config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments } },
+                      config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments, matchups } },
                       date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                       courseName: config.courseName || "Round",
                     });
@@ -1396,6 +3247,136 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               </div>
             )}
 
+            {/* Nassau inline status */}
+            {matchupEnabled && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div className="sect-title" style={{ fontSize: 13, color: "var(--accent)", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>Matchup</div>
+                  <button onClick={triggerBackStrokeModal}
+                    style={{ padding: "4px 12px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 6, color: "var(--accent)", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans', sans-serif" }}>
+                    Turn Adj
+                  </button>
+                </div>
+                {matchups.map((m, mi) => {
+                  const r = matchupResults[mi];
+                  if (!r) return null;
+                  const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
+                  const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
+                  const isGDB = m.type === "gdb";
+
+                  function segLabel(seg) {
+                    if (!seg || seg.holesPlayed === 0) return <span style={{ color: "var(--text)", fontWeight: "600" }}>—</span>;
+                    if (seg.status === 0) return <span style={{ color: "var(--text)", fontWeight: "700" }}>AS</span>;
+                    const col = seg.status > 0 ? p1col : p2col;
+                    const name = seg.status > 0 ? liveNames[m.p1] : liveNames[m.p2];
+                    return <span style={{ color: col, fontWeight: "700" }}>{name} {Math.abs(seg.status)} UP</span>;
+                  }
+
+                  // GDB segment from the current 9
+                  const gdbSeg = isGDB ? (holeIdx < 9 ? r.front : r.back) : null;
+
+                  return (
+                    <div key={mi} style={{ background: "var(--card)", borderRadius: 10, padding: "12px 14px", marginBottom: 10, border: `2px solid ${isLight?"#888":"#3a5a3a"}` }}>
+                      <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
+                        <span style={{ fontSize: 11, color: "var(--dim)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : "NASSAU"}</span>
+                        <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
+                        <span style={{ fontSize: 12, fontWeight: "500", color: "var(--muted)", marginLeft: 6 }}>{(() => {
+                          const eff = holeIdx < 9 ? m.strokesFront : m.strokesBack;
+                          if (eff === 0) return "scratch";
+                          const giver = eff > 0 ? m.p1 : m.p2;
+                          const receiver = eff > 0 ? m.p2 : m.p1;
+                          const map = holeIdx < 9 ? r.strokeMaps.front : r.strokeMaps.back;
+                          const receiverSet = eff > 0 ? map.p2 : map.p1;
+                          const siList = [...receiverSet].sort((a,b)=>a-b).join(",");
+                          return `${liveNames[giver]} gives ${liveNames[receiver]} ${Math.abs(eff)} (SI ${siList})`;
+                        })()}</span>
+                      </div>
+                      {/* Nett scores for this hole */}
+                      {(() => {
+                        const strokeMaps = r.strokeMaps;
+                        const strk = strokesForHole(holeIdx, h.si, strokeMaps);
+                        const g1 = parseInt(gross[holeIdx][m.p1], 10);
+                        const g2 = parseInt(gross[holeIdx][m.p2], 10);
+                        const cap = h.par === 3 ? h.par + 3 : h.par + 4;
+                        const nn1 = (inPlay[holeIdx] && !isNaN(g1) && g1 > 0) ? Math.min(g1 - strk.p1, cap) : null;
+                        const nn2 = (inPlay[holeIdx] && !isNaN(g2) && g2 > 0) ? Math.min(g2 - strk.p2, cap) : null;
+                        const holeWL = nn1 !== null && nn2 !== null ? (nn1 < nn2 ? 1 : nn2 < nn1 ? -1 : 0) : null;
+                        return (
+                          <div style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                            {[{pi: m.p1, col: p1col, nn: nn1}, {pi: m.p2, col: p2col, nn: nn2}].map(({pi, col, nn}, idx) => {
+                              const nettDiff = nn !== null ? nn - h.par : null;
+                              const winThisHole = holeWL !== null && ((idx === 0 && holeWL === 1) || (idx === 1 && holeWL === -1));
+                              const gotStroke = idx === 0 ? strk.p1 > 0 : strk.p2 > 0;
+                              const strokeCount = idx === 0 ? strk.p1 : strk.p2;
+                              return (
+                                <div key={pi} style={{ flex: 1, textAlign: "center", background: winThisHole ? col+"33" : "var(--input)", borderRadius: 8, padding: "8px 6px", border: `2px solid ${winThisHole ? col : gotStroke ? (isLight?"#16a34a":COLORS[0]) : "var(--border)"}` }}>
+                                  <div style={{ fontSize: 13, color: col, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>
+                                    {liveNames[pi]}
+                                    {gotStroke && <span style={{ color: isLight?"#16a34a":COLORS[0], fontSize: 10, marginLeft: 3 }}>+{strokeCount}</span>}
+                                  </div>
+                                  <div style={{ fontSize: 32, fontWeight: "700", color: nn !== null ? col : "var(--dim)", fontFamily: "'Bebas Neue', sans-serif", lineHeight: 1 }}>
+                                    {nn !== null ? nn : "—"}
+                                  </div>
+                                  {nettDiff !== null && (
+                                    <div style={{ fontSize: 12, fontWeight: "600", color: nettDiff < 0 ? (isLight?"#16a34a":COLORS[0]) : nettDiff > 0 ? "var(--neg)" : "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
+                                      {nettDiff < 0 ? nettDiff : nettDiff > 0 ? `+${nettDiff}` : "par"}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            <div style={{ fontSize: 22, fontFamily: "'DM Sans', sans-serif", minWidth: 32, textAlign: "center" }}>
+                              {holeWL === null ? <span style={{ color: "var(--dim)" }}>—</span> : holeWL === 0 ? <span style={{ color: "var(--muted)" }}>½</span> : holeWL === 1 ? <span style={{ color: p1col }}>▲</span> : <span style={{ color: p2col }}>▲</span>}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Nassau: Front/Back/Overall status boxes */}
+                      {!isGDB && (
+                        <div style={{ display: "flex", gap: 8, fontSize: 14, fontFamily: "'DM Sans', sans-serif", marginTop: 8 }}>
+                          {[["FRONT", r.front], ["BACK", r.back], ["OVERALL", r.overall]].map(([label, seg]) => (
+                            <div key={label} style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 6px" }}>
+                              <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>{label}</div>
+                              <div style={{ fontWeight: "700", color: "var(--text)", fontSize: 15 }}>{segLabel(seg)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* GDB: Game + Dormie/Bye status */}
+                      {isGDB && gdbSeg && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ display: "flex", gap: 8, fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>
+                            <div style={{ flex: 2, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 8px" }}>
+                              <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>GAME ×3 · {holeIdx < 9 ? "FRONT" : "BACK"} {gdbSeg.holesPlayed > 0 ? `(${gdbSeg.holesPlayed} played)` : ""}</div>
+                              <div style={{ fontWeight: "700", color: "var(--text)", fontSize: 15 }}>{segLabel(gdbSeg.game)}</div>
+                            </div>
+                            <div style={{ flex: 1, textAlign: "center", background: gdbSeg.dormie ? "var(--card)" : "var(--input)", borderRadius: 6, padding: "6px 4px", border: gdbSeg.dormie ? "1px solid var(--border2)" : "none" }}>
+                              <div style={{ fontSize: 10, color: gdbSeg.dormie ? "var(--accent)" : "var(--dim)", letterSpacing: 1, fontWeight: "700" }}>DORMIE ×1</div>
+                              <div style={{ fontWeight: "700", fontSize: 12 }}>
+                                {gdbSeg.dormie
+                                  ? <><div style={{ fontSize: 9, color: "var(--dim)" }}>from H{gdbSeg.dormie.startHole}</div><span style={{ color: "var(--accent)" }}>{segLabel(gdbSeg.dormie)}</span></>
+                                  : <span style={{ color: "var(--dim)" }}>—</span>}
+                              </div>
+                            </div>
+                            <div style={{ flex: 1, textAlign: "center", background: gdbSeg.buy ? "var(--card)" : "var(--input)", borderRadius: 6, padding: "6px 4px", border: gdbSeg.buy ? "1px solid var(--border2)" : "none" }}>
+                              <div style={{ fontSize: 10, color: gdbSeg.buy ? "var(--accent)" : "var(--dim)", letterSpacing: 1, fontWeight: "700" }}>BYE ×1</div>
+                              <div style={{ fontWeight: "700", fontSize: 12 }}>
+                                {gdbSeg.buy
+                                  ? <><div style={{ fontSize: 9, color: "var(--dim)" }}>from H{gdbSeg.buy.startHole}</div><span style={{ color: "var(--accent)" }}>{segLabel(gdbSeg.buy)}</span></>
+                                  : <span style={{ color: "var(--dim)" }}>—</span>}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Points this hole */}
             <Sect title={`Hole ${holeIdx+1} Points`}>
               <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
@@ -1403,7 +3384,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 <div style={{ display: "grid", gridTemplateColumns: `100px repeat(4, 1fr)`, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "8px 10px" }} />
                   {[0,1,2,3].map(pi => (
-                    <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 17, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{names[pi]}</div>
+                    <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 17, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
                   ))}
                 </div>
                 {/* Vegas row */}
@@ -1441,15 +3422,18 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           </>
         ) : (
           <TotalsView names={liveNames} results={results} holes={holes} vTeams={vTeams}
-            vegasCum={vegasCum} ctCum={ctCum} p3Cum={p3Cum} dollars={dollars}
+            vegasCum={vegasCum} ctCum={ctCum} p3Cum={p3Cum} dollars={dollarsTotal}
+            dollarsSubtotal={dollars}
             vegasVal={vegasVal} ctVal={ctVal} p3Val={p3Val} inPlay={inPlay}
             adjustments={adjustments} setAdjustments={setAdjustments}
             liveHcps={liveHcps} hcpThreshold={hcpThreshold} games={games}
+            matchupEnabled={matchupEnabled} nassauResults={matchupResults} matchups={matchups}
+            qrPayload={qrPayload}
             saveMsg={saveMsg}
             onSave={() => {
               const roundData = {
                 roundId,
-                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, liveNames, adjustments } },
+                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
                 savedAt: Date.now(),
@@ -1461,14 +3445,14 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             onExport={() => {
               const roundData = {
                 roundId,
-                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, liveNames, adjustments } },
+                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
                 savedAt: Date.now(),
               };
               exportRound(roundData);
             }}
-            onReport={() => generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars, vegasCum, ctCum, p3Cum, vegasVal, ctVal, p3Val, adjustments, games, courseName: config.courseName, roundStartTime })}
+            onReport={() => generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, vegasVal, ctVal, p3Val, adjustments, games, matchupEnabled, nassauResults, matchups, courseName: config.courseName, roundStartTime, qrPayload })}
             onHole={hi => { setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
         ))}
@@ -1502,14 +3486,16 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TOTALS VIEW
 // ─────────────────────────────────────────────────────────────────────────────
-function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dollars, vegasVal, ctVal, p3Val, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, onSave, onExport, onReport, saveMsg, onHole, isLight }) {
+function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dollars, dollarsSubtotal, vegasVal, ctVal, p3Val, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, qrPayload }) {
   const [tab, setTab] = useState("board");
   const [showHcp, setShowHcp] = useState(false);
   const [showAdj, setShowAdj] = useState(false);
 
+  // HCP adjustment uses Vegas/CT/Banker subtotal only (not Nassau)
+  const hcpBase = dollarsSubtotal || dollars;
   const strokeAdj = [0,1,2,3].map(i => {
-    const strokes = Math.floor(Math.abs(dollars[i]) / hcpThreshold);
-    return dollars[i]>0 ? -strokes : dollars[i]<0 ? strokes : 0;
+    const strokes = Math.floor(Math.abs(hcpBase[i]) / hcpThreshold);
+    return hcpBase[i]>0 ? -strokes : hcpBase[i]<0 ? strokes : 0;
   });
   const adjHcps = [0,1,2,3].map(i => liveHcps[i] + strokeAdj[i]);
   const minHcp = Math.min(...adjHcps);
@@ -1531,7 +3517,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
       </div>
       {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: "var(--accent)", marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CUT THROAT"],["par3","BANKER"]].filter(([t]) => t==="board" || (t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3)).map(([t,label]) => (
+        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CUT THROAT"],["par3","BANKER"],["nassau","MATCHUPS"]].filter(([t]) => t==="board" || (t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3) || (t==="nassau"&&matchupEnabled)).map(([t,label]) => (
           <button key={t} className="tab-btn" onClick={() => setTab(t)}
             style={{ padding: "8px 12px", borderRadius: 6, fontSize: 11, letterSpacing: 1, cursor: "pointer",
               border: `1px solid ${tab===t?COLORS[0]:"#1e3a1e"}`,
@@ -1549,10 +3535,12 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
           {/* Breakdown table */}
           <Sect title="Totals">
             <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
+              {/* Header */}
               <div style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", borderBottom: "1px solid var(--border)" }}>
                 <div style={{ padding: "8px 10px", fontSize: 11, color: "#3a6a3a" }} />
                 {[0,1,2,3].map(i => <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 16, color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{names[i]}</div>)}
               </div>
+              {/* Vegas / CT / Banker rows */}
               {[["Vegas","vegas",vegasCum,vegasVal],["Cut Throat","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
                 <div key={label} style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
@@ -1562,6 +3550,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
                   })}
                 </div>
               ))}
+              {/* Manual adjustment */}
               {adjustments.some(a=>a!==0) && (
                 <div style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center" }}>Adj</div>
@@ -1571,14 +3560,45 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
                   })}
                 </div>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", background: "var(--card)" }}>
-                <div style={{ padding: "10px 10px", fontSize: 12, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>TOTAL</div>
-                {[0,1,2,3].map(i => (
-                  <div key={i} style={{ padding: "10px 4px", textAlign: "center", fontSize: 22, fontWeight: "700", color: dollars[i]>0?(isLight?"#16a34a":COLORS[0]):dollars[i]<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
-                    {dollars[i]>0?"+":""}{dollars[i]}
-                  </div>
-                ))}
+              {/* Subtotal — Vegas/CT/Banker */}
+              <div style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", background: "var(--card)", borderBottom: matchupEnabled ? "2px solid var(--border2)" : "none" }}>
+                <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>
+                  {matchupEnabled ? "Subtotal" : "TOTAL"}
+                </div>
+                {[0,1,2,3].map(i => {
+                  const v = (dollarsSubtotal||dollars)[i];
+                  return <div key={i} style={{ padding: matchupEnabled?"8px 4px":"10px 4px", textAlign: "center", fontSize: matchupEnabled?16:22, fontWeight: "700", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                })}
               </div>
+              {/* Nassau row */}
+              {matchupEnabled && (() => {
+                const nassauPD = [0,0,0,0];
+                matchupResults.forEach((r, mi) => {
+                  const m = matchups[mi];
+                  nassauPD[m.p1] += r.dollars.net;
+                  nassauPD[m.p2] -= r.dollars.net;
+                });
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Matchup</div>
+                    {[0,1,2,3].map(i => {
+                      const v = nassauPD[i];
+                      return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 16, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                    })}
+                  </div>
+                );
+              })()}
+              {/* Grand total — only show when Nassau is on */}
+              {matchupEnabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "80px repeat(4,1fr)", background: "var(--card)" }}>
+                  <div style={{ padding: "10px 10px", fontSize: 12, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>TOTAL</div>
+                  {[0,1,2,3].map(i => (
+                    <div key={i} style={{ padding: "10px 4px", textAlign: "center", fontSize: 22, fontWeight: "700", color: dollars[i]>0?(isLight?"#16a34a":COLORS[0]):dollars[i]<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
+                      {dollars[i]>0?"+":""}{dollars[i]}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </Sect>
 
@@ -1759,6 +3779,106 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
         </Sect>
       )}
 
+      {tab === "nassau" && matchupEnabled && (
+        <Sect title="Matchups — Results">
+          {(matchupResults||[]).map((r, mi) => {
+            const m = matchups[mi];
+            const p1name = names[m.p1];
+            const p2name = names[m.p2];
+            const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
+            const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
+            const isGDB = m.type === "gdb";
+            const net = r.dollars.net;
+
+            function segRow(label, seg, dollarAmt) {
+              if (!seg) return null;
+              const { status, holesPlayed } = seg;
+              const statusText = holesPlayed === 0 ? "—"
+                : status === 0 ? "AS"
+                : `${status > 0 ? p1name : p2name} ${Math.abs(status)} UP`;
+              const statusCol = status > 0 ? p1col : status < 0 ? p2col : "var(--dim)";
+              const dollarCol = dollarAmt > 0 ? (isLight?"#16a34a":COLORS[0]) : dollarAmt < 0 ? "var(--neg)" : "var(--dim)";
+              return (
+                <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                  <span style={{ fontSize: 12, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", width: 90 }}>{label}</span>
+                  <span style={{ fontSize: 13, fontWeight: "600", color: statusCol, fontFamily: "'DM Sans', sans-serif", flex: 1, textAlign: "center" }}>{statusText}</span>
+                  <span style={{ fontSize: 14, fontWeight: "700", color: dollarCol, fontFamily: "'DM Sans', sans-serif", width: 56, textAlign: "right" }}>
+                    {dollarAmt === 0 ? "—" : `${dollarAmt > 0 ? "+" : ""}$${dollarAmt}`}
+                  </span>
+                </div>
+              );
+            }
+
+            return (
+              <div key={mi} style={{ background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+                {/* Header */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>
+                    MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : "NASSAU"}
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: "800", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+                    <span style={{ color: p1col }}>{p1name}</span> <span style={{ color: "var(--dim)", fontSize: 13 }}>vs</span> <span style={{ color: p2col }}>{p2name}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>
+                    {isGDB
+                      ? `Game/Dormie/Bye · $${m.stake}/unit · max $${m.stake*5}/9`
+                      : `${(m.units||[1,1,2]).join(":")} · $${m.stake}/unit`
+                    } ·{" "}
+                    {[["F", m.strokesFront], ["B", m.strokesBack]].map(([label, v]) => {
+                      if (v === 0) return `${label}: scratch`;
+                      const giver = v > 0 ? p1name : p2name;
+                      const receiver = v > 0 ? p2name : p1name;
+                      return `${label}: ${giver}→${receiver} ${Math.abs(v)}`;
+                    }).join(" · ")}
+                  </div>
+                </div>
+
+                {/* Nassau rows */}
+                {!isGDB && (() => {
+                  const { frontDollars, backDollars, overallDollars, pressDollars } = r.dollars;
+                  const u = m.units||[1,1,2];
+                  return <>
+                    {u[0] > 0 && segRow(`Front 9 ×${u[0]}`, r.front, frontDollars)}
+                    {u[1] > 0 && segRow(`Back 9 ×${u[1]}`, r.back, backDollars)}
+                    {u[2] > 0 && segRow(`Overall ×${u[2]}`, r.overall, overallDollars)}
+                    {r.presses?.length > 0 && segRow(`Press ×${r.presses.length}`, { status: r.presses.reduce((s,p)=>s+p.status,0), holesPlayed: r.presses[0]?.holesPlayed||0 }, pressDollars)}
+                  </>;
+                })()}
+
+                {/* GDB rows — per 9 */}
+                {isGDB && [["FRONT 9", r.front, r.dollars.front], ["BACK 9", r.back, r.dollars.back]].map(([label, seg9, dol9]) => {
+                  if (!seg9 || !dol9) return null;
+                  return (
+                    <div key={label} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid var(--border)" }}>
+                      <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>{label}</div>
+                      {segRow(`Game ×3`, seg9.game, dol9.gameDollars)}
+                      {seg9.dormie && segRow(`Dormie ×1 (H${seg9.dormie.startHole}+)`, seg9.dormie, dol9.dormieDollars)}
+                      {seg9.buy    && segRow(`Bye ×1 (H${seg9.buy.startHole}+)`,    seg9.buy,    dol9.buyDollars)}
+                      {!seg9.dormie && !seg9.buy && (
+                        <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>No Dormie or Bye triggered</div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Net */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 10, marginTop: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Net</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 13, color: net > 0 ? p1col : net < 0 ? p2col : "var(--dim)", fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>
+                      {net === 0 ? "All Square" : `${net > 0 ? p1name : p2name} wins`}
+                    </span>
+                    <span style={{ fontSize: 22, fontWeight: "700", color: net > 0 ? (isLight?"#16a34a":COLORS[0]) : net < 0 ? "var(--neg)" : "var(--dim)", fontFamily: "'Bebas Neue', sans-serif" }}>
+                      {net === 0 ? "—" : `$${Math.abs(net)}`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </Sect>
+      )}
+
       {/* Full gross scorecard */}
       <Sect title="Scorecard (Gross)">
         <div style={{ overflowX: "auto", borderRadius: 8, border: "1px solid var(--border)" }}>
@@ -1851,6 +3971,23 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, dol
           </table>
         </div>
       </Sect>
+
+      {/* QR Code — full round data for cross-flight sharing */}
+      {qrPayload && (
+        <Sect title="QR Code — Share Round">
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 12, fontFamily: "'DM Sans', sans-serif" }}>
+              Scan to share full round data · cross-flight matchups · scorecard
+            </div>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+              <QRCodeDisplay payload={qrPayload} size={220} />
+            </div>
+            <div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
+              {qrPayload.length} chars · {names.join(" · ")}
+            </div>
+          </div>
+        </Sect>
+      )}
     </>
   );
 }
