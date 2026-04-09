@@ -687,7 +687,24 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, doll
   </div>
   <div style="text-align:center;margin:10px 0;page-break-inside:avoid">
     <h2 style="font-size:9px;color:#4a7a4a;letter-spacing:2px;text-transform:uppercase;margin:8px 0 6px;border-bottom:1px solid #ddd;padding-bottom:2px">QR Code — Full Round Data</h2>
-    <div id="qr-report" style="display:inline-block;background:#fff;padding:6px;border:1px solid #eee;border-radius:4px"></div>
+    ${(()=>{
+      try {
+        const QRCode = createQRMaker();
+        const qr = new QRCode(-1, 1);
+        qr.addData(qrPayload||"");
+        qr.make();
+        const n = qr.getModuleCount();
+        const size = 160;
+        const cell = size / (n + 8);
+        const off = cell * 4;
+        let rects = `<rect width="${size}" height="${size}" fill="white"/>`;
+        for (let r = 0; r < n; r++)
+          for (let c = 0; c < n; c++)
+            if (qr.isDark(r, c))
+              rects += `<rect x="${(off+c*cell).toFixed(2)}" y="${(off+r*cell).toFixed(2)}" width="${(cell+0.1).toFixed(2)}" height="${(cell+0.1).toFixed(2)}" fill="black"/>`;
+        return `<div style="display:inline-block;background:#fff;padding:6px;border:1px solid #eee;border-radius:4px"><svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">${rects}</svg></div>`;
+      } catch(e) { return `<div style="font-size:11px;color:#999">QR unavailable</div>`; }
+    })()}
     <div style="font-size:9px;color:#aaa;margin-top:4px">${names.join(" · ")}</div>
   </div>
   <div class="no-print" style="text-align:center;margin-top:10px;display:flex;gap:10px;justify-content:center">
@@ -697,31 +714,10 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, doll
     <button onclick="window.close()" style="padding:8px 20px;background:#1e3a1e;color:#4ade80;border:1px solid #2a5a2a;border-radius:6px;font-size:13px;cursor:pointer">
       ← Back
     </button>
-  <script>QRMAKER_PLACEHOLDER</script>
-  <script>
-    (function(){
-      var payload = PAYLOAD_PLACEHOLDER;
-      if (!payload) return;
-      try {
-        var QRCode = createQRMaker();
-        new QRCode(document.getElementById("qr-report"),{
-          text: payload, width:160, height:160,
-          colorDark:"#000000", colorLight:"#ffffff",
-          correctLevel: 1
-        });
-      } catch(e) { console.error("QR error:", e); }
-    })();
-  </script>
 </body>
 </html>`;
 
-  const qrFn = createQRMaker.toString();
-  const finalHtml = html
-    .replace("QRMAKER_PLACEHOLDER", qrFn + "\nvar _QRMaker = createQRMaker();")
-    .replace('"PAYLOAD_PLACEHOLDER"', JSON.stringify(qrPayload||""))
-    .replace("var QRCode = createQRMaker();", "var QRCode = _QRMaker;");
-
-  const blob = new Blob([finalHtml], { type: "text/html" });
+  const blob = new Blob([html], { type: "text/html" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
