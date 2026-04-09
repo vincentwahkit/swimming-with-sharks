@@ -717,8 +717,9 @@ function generateReport({ names, holes, liveHcps, inPlay, results, dollars, doll
 
   const qrFn = createQRMaker.toString();
   const finalHtml = html
-    .replace("QRMAKER_PLACEHOLDER", qrFn)
-    .replace('"PAYLOAD_PLACEHOLDER"', JSON.stringify(qrPayload||""));
+    .replace("QRMAKER_PLACEHOLDER", qrFn + "\nvar _QRMaker = createQRMaker();")
+    .replace('"PAYLOAD_PLACEHOLDER"', JSON.stringify(qrPayload||""))
+    .replace("var QRCode = createQRMaker();", "var QRCode = _QRMaker;");
 
   const blob = new Blob([finalHtml], { type: "text/html" });
   const url = URL.createObjectURL(blob);
