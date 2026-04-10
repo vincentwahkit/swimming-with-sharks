@@ -383,26 +383,16 @@ function gdbDollars(matchup, front, back) {
 
 // HELPERS
 function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTeams, dollars, nassauMatchups: matchups, nassauResults, nassauEnabled: matchupEnabled, courseName }) {
-  // Encode inPlay as bitmask
   const ipMask = inPlay.reduce((acc, v, i) => acc + (v ? (1 << i) : 0), 0);
-  // Flatten scores [18×4] — encode as base36 single chars (scores 1-15 fit in 1 char)
+  const ho = holes.flatMap(h => [h.par, h.si]);
   const sc = scores.map(row => row.map(g => parseInt(g,10)||0));
-  // Encode holes as compact string: each hole = par (1 char) + si (2 chars zero-padded)
-  // par: 3=a 4=b 5=c 6=d  si: 01-18
-  const hoStr = holes.map(h => {
-    const p = ['','','','a','b','c','d'][h.par] || 'b';
-    const s = String(h.si).padStart(2,'0');
-    return p+s;
-  }).join('');
-  // Scores: each score as single base36 char (1=1...9=9,10=a...15=f)
-  const sfStr = sc.flat().map(s => s.toString(36)).join('');
+  const sf = sc.flat();
   const payload = {
-    v:"2",
+    v: "1",
     c: (courseName||"Custom").slice(0,20),
-    p: names.map(n=>n.slice(0,5)),
+    p: names.map(n=>n.slice(0,6)),
     h: hcps,
-    ho: hoStr,
-    sf: sfStr,
+    ho, sf,
     ip: ipMask,
     fn: "F",
   };
