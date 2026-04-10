@@ -385,35 +385,26 @@ function gdbDollars(matchup, front, back) {
 function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTeams, dollars, nassauMatchups: matchups, nassauResults, nassauEnabled: matchupEnabled, courseName }) {
   // Encode inPlay as bitmask
   const ipMask = inPlay.reduce((acc, v, i) => acc + (v ? (1 << i) : 0), 0);
-  // Flatten holes [par,si,...] and scores [18×4]
-  const ho = holes.flatMap(h => [h.par, h.si]);
+  // Flatten scores [18×4] — encode as base36 single chars (scores 1-15 fit in 1 char)
   const sc = scores.map(row => row.map(g => parseInt(g,10)||0));
-  const sf = sc.flat();
-  // Vegas teams — only store deviations from default [[0,1],[2,3]]
-  const defaultT = [[0,1],[2,3]];
-  const vtDev = vTeams.map((t,hi) =>
-    (t[0][0]===0&&t[0][1]===1&&t[1][0]===2&&t[1][1]===3) ? null : [t[0],t[1]]
-  );
-  const vt = vtDev.every(v=>v===null) ? [] : vtDev;
-  // Nassau summary
-  const nassau = matchupEnabled ? (matchups||[]).map((m,mi) => {
-    const r = (nassauResults||[])?.[mi];
-    return { p1:m.p1, p2:m.p2, net:r?.dollars?.net??0 };
-  }) : [];
+  // Encode holes as compact string: each hole = par (1 char) + si (2 chars zero-padded)
+  // par: 3=a 4=b 5=c 6=d  si: 01-18
+  const hoStr = holes.map(h => {
+    const p = ['','','','a','b','c','d'][h.par] || 'b';
+    const s = String(h.si).padStart(2,'0');
+    return p+s;
+  }).join('');
+  // Scores: each score as single base36 char (1=1...9=9,10=a...15=f)
+  const sfStr = sc.flat().map(s => s.toString(36)).join('');
   const payload = {
-    v:"1",
-    c: (courseName||"Custom").slice(0,30),
-    d: new Date().toISOString().slice(0,10).replace(/-/g,""),
-    p: names.map(n=>n.slice(0,8)),
+    v:"2",
+    c: (courseName||"Custom").slice(0,20),
+    p: names.map(n=>n.slice(0,5)),
     h: hcps,
-    ho, sf,
+    ho: hoStr,
+    sf: sfStr,
     ip: ipMask,
-    vt,
-    g: { v:games.vegas?1:0, ct:games.ct?1:0, p3:games.p3?1:0, n:matchupEnabled?1:0 },
-    st: { v:stakes.vegasVal||1, ct:stakes.ctVal||3, p3:stakes.p3Val||5 },
-    dl: dollars,
-    fn: "F", // firstNine default — overrideable per cross-flight matchup
-    nassau,
+    fn: "F",
   };
   return JSON.stringify(payload);
 }
