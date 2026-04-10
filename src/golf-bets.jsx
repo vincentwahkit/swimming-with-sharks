@@ -387,14 +387,30 @@ function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTe
   const ho = holes.flatMap(h => [h.par, h.si]);
   const sc = scores.map(row => row.map(g => parseInt(g,10)||0));
   const sf = sc.flat();
+  // Vegas teams — only store deviations from default [[0,1],[2,3]]
+  const vtDev = vTeams.map(t =>
+    (t[0][0]===0&&t[0][1]===1&&t[1][0]===2&&t[1][1]===3) ? null : [t[0],t[1]]
+  );
+  const vt = vtDev.every(v=>v===null) ? [] : vtDev;
+  // Nassau summary
+  const nassau = matchupEnabled ? (matchups||[]).map((m,mi) => {
+    const r = (nassauResults||[])?.[mi];
+    return { p1:m.p1, p2:m.p2, net:r?.dollars?.net??0 };
+  }) : [];
   const payload = {
     v: "1",
-    c: (courseName||"Custom").slice(0,20),
-    p: names.map(n=>n.slice(0,6)),
+    c: (courseName||"Custom").slice(0,30),
+    d: new Date().toISOString().slice(0,10).replace(/-/g,""),
+    p: names.map(n=>n.slice(0,8)),
     h: hcps,
     ho, sf,
     ip: ipMask,
+    vt,
+    g: { v:games.vegas?1:0, ct:games.ct?1:0, p3:games.p3?1:0, n:matchupEnabled?1:0 },
+    st: { v:stakes.vegasVal||1, ct:stakes.ctVal||3, p3:stakes.p3Val||5 },
+    dl: dollars,
     fn: "F",
+    nassau,
   };
   return JSON.stringify(payload);
 }
