@@ -1189,7 +1189,7 @@ function QRCodeDisplay({ payload, size = 300 }) {
     if (document.getElementById('sws-qr')) return;
     const s = document.createElement('script');
     s.id = 'sws-qr';
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+    s.src = 'https://unpkg.com/qrcodejs@1.0.0/qrcode.min.js';
     s.onload = () => setReady(true);
     document.head.appendChild(s);
   }, []);
