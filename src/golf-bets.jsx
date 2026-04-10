@@ -1169,33 +1169,31 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
   );
 }
 
-// QR CODE — CDN loader + SVG renderer
+// QR CODE — uses qrcode npm package via dynamic import
 function QRCodeDisplay({ payload, size = 300 }) {
-  const ref = React.useRef(null);
-  const last = React.useRef(null);
-  const [ready, setReady] = React.useState(!!window.QRCode);
+  const canvasRef = React.useRef(null);
+  const [err, setErr] = React.useState(null);
+  const [ready, setReady] = React.useState(false);
   React.useEffect(() => {
-    if (window.QRCode) { setReady(true); return; }
-    if (document.getElementById('sws-qr')) return;
-    const s = document.createElement('script');
-    s.id = 'sws-qr';
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-    s.onload = () => setReady(true);
-    document.head.appendChild(s);
+    import('qrcode').then(mod => {
+      const QRCode = mod.default || mod;
+      setReady(QRCode);
+    }).catch(() => setErr('QR library unavailable'));
   }, []);
   React.useEffect(() => {
-    if (!ready || !payload || !ref.current || last.current === payload) return;
-    last.current = payload;
-    ref.current.innerHTML = '';
-    const tmp = document.createElement('div');
-    document.body.appendChild(tmp);
-    try {
-      new window.QRCode(tmp, { text: payload, width: size, height: size, colorDark: '#000', colorLight: '#fff', correctLevel: window.QRCode.CorrectLevel.L });
-      ref.current.innerHTML = tmp.innerHTML;
-    } catch(e) { ref.current.textContent = 'QR error'; }
-    document.body.removeChild(tmp);
-  }, [ready, payload]);
-  return <div ref={ref} style={{ display:'inline-block', background:'#fff', padding:8, borderRadius:8, minWidth:size, minHeight:size }} />;
+    if (!ready || !payload || !canvasRef.current) return;
+    ready.toCanvas(canvasRef.current, payload, {
+      width: size, margin: 2,
+      color: { dark: '#000000', light: '#ffffff' },
+      errorCorrectionLevel: 'L',
+    }).catch(e => setErr('QR error: ' + e.message));
+  }, [ready, payload, size]);
+  if (err) return <div style={{color:'var(--neg)',fontSize:12,padding:8}}>{err}</div>;
+  return (
+    <div style={{display:'inline-block',background:'#fff',padding:8,borderRadius:8}}>
+      <canvas ref={canvasRef}/>
+    </div>
+  );
 }
 
 // SCORECARD
